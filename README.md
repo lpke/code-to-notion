@@ -80,6 +80,7 @@ code-to-pages <dir> [options]
 | `--name <name>` | Override the project name (defaults to the directory basename) |
 | `--only <dirs...>` | Only include these subdirectories (root-level files are always included) |
 | `--ignore <patterns...>` | Additional glob patterns to ignore on top of defaults |
+| `--no-git` | Skip git context gathering even if `.git` exists |
 | `--dry-run` | Print the file tree without calling the Notion API |
 | `--concurrency <n>` | Max concurrent API requests (default: 2, max: 3) |
 | `--verbose` | Print detailed per-file progress |
@@ -106,6 +107,9 @@ code-to-pages ./my-project --ignore "**/*.test.ts" "docs/**"
 
 # Verbose output with higher concurrency
 code-to-pages ./my-project --verbose --concurrency 3
+
+# Skip git context gathering
+code-to-pages ./my-project --no-git
 ```
 
 ## Default Ignore Patterns
@@ -126,6 +130,23 @@ The following are always excluded (in addition to `.gitignore` rules):
 
 Files larger than 500KB are truncated with a warning.
 
+### Git Context
+
+When the target directory is a git repository, `code-to-pages` automatically gathers comprehensive git metadata and creates a dedicated "🔀 Git Context" page at the root level of the project in Notion, alongside the file tree. This page appears before the file tree and includes:
+
+- **Repository info** — remote URLs, current/default branch, total commits, repo age
+- **Recent activity** — commits from the last 7 days, most frequently changed files, active contributors, diffstat
+- **Working directory status** — staged, unstaged, and untracked file counts, stash count
+- **Branch details** — each branch gets a toggleable section with its commit history
+- **Tags** — the 10 most recent tags
+
+**Branch limits:**
+- If a repository has more than 20 branches, git context is skipped entirely (an error is logged)
+- If a repository has more than 10 branches (but ≤ 20), only the 10 most recently committed branches are included (a warning is logged)
+- If a repository has 10 or fewer branches, all branches are included
+
+To skip git context gathering, use the `--no-git` flag. Git context is also skipped during `--dry-run`.
+
 ## Project Structure
 
 ```
@@ -134,6 +155,7 @@ src/
 ├── config.ts         # Environment variable loading
 ├── types.ts          # Shared TypeScript types
 ├── files.ts          # File tree building, globbing, language detection
+├── git.ts            # Git metadata extraction
 ├── chunker.ts        # Content chunking for Notion's API limits
 ├── notion.ts         # Notion API interactions (pages, blocks)
 ├── rate-limiter.ts   # Concurrency control and 429 retry handling

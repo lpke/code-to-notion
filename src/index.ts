@@ -21,6 +21,7 @@ program
   .option("--dry-run", "Walk the tree and print what would be uploaded, without calling the API", false)
   .option("--concurrency <n>", "Max concurrent API requests (default: 2, max: 3)", "2")
   .option("--verbose", "Print detailed per-file progress", false)
+  .option("--no-git", "Skip git context gathering even if .git exists")
   .action(async (dir: string, opts: {
     name?: string;
     only?: string[];
@@ -28,6 +29,7 @@ program
     dryRun: boolean;
     concurrency: string;
     verbose: boolean;
+    git: boolean;
   }) => {
     try {
       // Validate directory exists
@@ -52,6 +54,7 @@ program
         dryRun: opts.dryRun,
         concurrency,
         verbose: opts.verbose,
+        git: opts.git,
       };
 
       // Load config (only required for non-dry-run)

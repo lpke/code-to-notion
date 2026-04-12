@@ -21,8 +21,10 @@ import {
   appendCodeBlocks,
   appendMetadataBlock,
   appendRootCallout,
+  appendGitContextPage,
 } from "./notion.js";
 import * as logger from "./logger.js";
+import { gatherGitContext } from "./git.js";
 import type { Config } from "./types.js";
 
 const MAX_RETRIES = 3;
@@ -49,11 +51,17 @@ export async function upload(
   const fileCount = counts.files;
 
   // Estimate API calls: 1 per page + 1 for metadata callout + ~1 for code blocks per file + 1 for root callout
-  const estimatedApiCalls =
+  let estimatedApiCalls =
     1 + // root page
     1 + // root callout
     dirCount + // directory pages
     fileCount * 3; // file page + metadata + code block(s)
+
+  // Account for git context page if enabled
+  if (options.git) {
+    const branchEstimate = Math.min(dirCount > 0 ? 5 : 2, 10);
+    estimatedApiCalls += branchEstimate * 2 + 8;
+  }
 
   // Step 2: Print summary
   logger.info(`\n\uD83D\uDCCA Summary:`);
@@ -103,6 +111,23 @@ export async function upload(
       fileCount,
       ignorePatternsDisplay,
     );
+
+    // Step 4b: Gather and upload git context (before file tree)
+    if (options.git) {
+      try {
+        logger.startSpinner("\uD83D\uDCDD Gathering git context...");
+        const gitContext = await gatherGitContext(absDir);
+        if (gitContext) {
+          logger.updateSpinner("\uD83D\uDCDD Uploading git context...");
+          await appendGitContextPage(rootPageId, gitContext);
+          pagesCreated++;
+          logger.debug("\u2713 Git context uploaded");
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(`Git context failed (continuing with upload): ${message}`);
+      }
+    }
 
     // Step 5: Recursively upload
     await uploadChildren(

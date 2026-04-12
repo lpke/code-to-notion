@@ -2,6 +2,7 @@ import { Client } from "@notionhq/client";
 import type { BlockObjectRequest } from "@notionhq/client/build/src/api-endpoints/common.js";
 import type { LanguageRequest } from "@notionhq/client/build/src/api-endpoints/common.js";
 import { RateLimiter } from "./rate-limiter.js";
+import type { GitContext } from "./types.js";
 
 let notionClient: Client;
 let rateLimiter: RateLimiter;
@@ -14,6 +15,283 @@ export function initNotion(apiToken: string, concurrency: number): void {
     retry: false,
   });
   rateLimiter = new RateLimiter(concurrency);
+}
+
+/**
+ * Create a "🔀 Git Context" child page under the project root and populate it
+ * with structured git metadata blocks.
+ */
+export async function appendGitContextPage(
+  parentPageId: string,
+  ctx: GitContext,
+): Promise<void> {
+  // Create the child page
+  const pageId = await createNotionPage(parentPageId, "\u{1F500} Git Context", "\u{1F500}");
+
+  // --- Build all top-level blocks ---
+  const blocks: BlockObjectRequest[] = [];
+
+  // 1. Summary callout
+  const primaryRemote = ctx.remotes.length > 0 ? ctx.remotes[0].url : "(none)";
+  const branchNote = ctx.branchLimitApplied
+    ? ` (showing 10 of ${ctx.totalBranchCount})`
+    : "";
+  const summaryText =
+    `Remote: ${primaryRemote}\n` +
+    `Current branch: ${ctx.currentBranch}\n` +
+    `Default branch: ${ctx.defaultBranch}\n` +
+    `Total commits: ${ctx.totalCommits}\n` +
+    `Repo age: ${formatDate(ctx.repoAge)} \u2192 ${formatDate(ctx.lastCommitDate)}\n` +
+    `Branches: ${ctx.totalBranchCount}${branchNote}`;
+
+  blocks.push({
+    type: "callout",
+    callout: {
+      rich_text: [{ type: "text", text: { content: summaryText } }],
+      icon: { type: "emoji", emoji: "\u{1F500}" },
+      color: "blue_background",
+    },
+  });
+
+  // 2. Recent Activity heading
+  blocks.push(heading2("Recent Activity (Last 7 Days)"));
+
+  if (ctx.recentActivity.commitsLast7Days.length > 0) {
+    const recentLines = ctx.recentActivity.commitsLast7Days.map((c) => {
+      const branchTag = c.branches ? ` [${c.branches}]` : "";
+      return `${c.shortHash} | ${formatDate(c.date)} | ${c.author} | ${c.subject}${branchTag}`;
+    });
+    blocks.push(codeBlock(recentLines.join("\n")));
+  } else {
+    blocks.push(paragraph("No commits in the last 7 days."));
+  }
+
+  // Most Changed Files
+  if (ctx.recentActivity.hotFiles.length > 0) {
+    blocks.push(heading3("Most Changed Files"));
+    const hotLines = ctx.recentActivity.hotFiles.map(
+      (f) => `${f.count} changes | ${f.file}`,
+    );
+    blocks.push(codeBlock(hotLines.join("\n")));
+  }
+
+  // Active Contributors
+  if (ctx.recentActivity.activeContributors.length > 0) {
+    blocks.push(heading3("Active Contributors (Last 30 Days)"));
+    const contribLines = ctx.recentActivity.activeContributors.map(
+      (c) => `${c.commits} commits | ${c.name}`,
+    );
+    blocks.push(codeBlock(contribLines.join("\n")));
+  }
+
+  // Diffstat
+  if (ctx.recentActivity.diffstatLast10) {
+    blocks.push(heading3("Diffstat (Last 10 Commits)"));
+    blocks.push(codeBlock(ctx.recentActivity.diffstatLast10));
+  }
+
+  // 3. Working Directory heading
+  blocks.push(heading2("Working Directory"));
+
+  const wd = ctx.workingDirectory;
+  const isClean =
+    wd.staged === 0 &&
+    wd.unstaged === 0 &&
+    wd.untracked === 0 &&
+    wd.stashCount === 0;
+
+  if (isClean) {
+    blocks.push({
+      type: "callout",
+      callout: {
+        rich_text: [
+          { type: "text", text: { content: "\u2705 Clean working directory" } },
+        ],
+        icon: { type: "emoji", emoji: "\u2705" },
+        color: "gray_background",
+      },
+    });
+  } else {
+    blocks.push({
+      type: "callout",
+      callout: {
+        rich_text: [
+          {
+            type: "text",
+            text: {
+              content:
+                `Staged: ${wd.staged}, Unstaged: ${wd.unstaged}, ` +
+                `Untracked: ${wd.untracked}, Stashes: ${wd.stashCount}`,
+            },
+          },
+        ],
+        icon: { type: "emoji", emoji: "\u{1F4DD}" },
+        color: "gray_background",
+      },
+    });
+  }
+
+  // 4. Branches heading
+  blocks.push(heading2("Branches"));
+
+  // Build toggleable heading blocks for each branch (content added separately)
+  const branchToggleBlocks: BlockObjectRequest[] = [];
+  for (const branch of ctx.branches) {
+    const indicator = branch.isCurrentBranch ? " \u2B05" : "";
+    branchToggleBlocks.push({
+      type: "heading_3",
+      heading_3: {
+        rich_text: [
+          {
+            type: "text",
+            text: {
+              content: `${branch.name} (last commit: ${formatDate(branch.lastCommitDate)})${indicator}`,
+            },
+          },
+        ],
+        is_toggleable: true,
+        color: "default",
+      },
+    } as BlockObjectRequest);
+  }
+
+  // 5. Tags heading (only if tags exist)
+  const tagBlocks: BlockObjectRequest[] = [];
+  if (ctx.tags.length > 0) {
+    tagBlocks.push(heading2("Tags"));
+    const tagLines = ctx.tags.map(
+      (t) => `${t.name} | ${formatDate(t.date)} | ${t.subject}`,
+    );
+    tagBlocks.push(codeBlock(tagLines.join("\n")));
+  }
+
+  // --- Append all top-level blocks in batches ---
+  // Combine: blocks + branchToggleBlocks + tagBlocks
+  const allTopLevel = [...blocks, ...branchToggleBlocks, ...tagBlocks];
+
+  for (let i = 0; i < allTopLevel.length; i += 100) {
+    const batch = allTopLevel.slice(i, i + 100);
+    await rateLimiter.schedule(() =>
+      notionClient.blocks.children.append({
+        block_id: pageId,
+        children: batch,
+      }),
+    );
+  }
+
+  // --- Append toggle content for each branch ---
+  // We need to find the IDs of the toggle heading blocks we just created.
+  // Fetch children of the page to get their IDs.
+  const pageChildren = await rateLimiter.schedule(() =>
+    notionClient.blocks.children.list({
+      block_id: pageId,
+      page_size: 100,
+    }),
+  );
+
+  // Find the toggle heading blocks (heading_3 with is_toggleable)
+  const toggleBlocks = pageChildren.results.filter((block: Record<string, unknown>) => {
+    if (block.type !== "heading_3") return false;
+    const h3 = block.heading_3 as { is_toggleable?: boolean };
+    return h3?.is_toggleable === true;
+  });
+
+  // Map branch names to toggle block IDs
+  for (let i = 0; i < ctx.branches.length && i < toggleBlocks.length; i++) {
+    const branch = ctx.branches[i];
+    const toggleBlockId = toggleBlocks[i].id;
+
+    // Build the commit log content for this branch
+    const commitLines: string[] = [];
+    for (const commit of branch.commits) {
+      commitLines.push(
+        `${commit.shortHash} | ${formatDate(commit.date)} | ${commit.author} | ${commit.subject}`,
+      );
+      if (commit.body) {
+        // Indent the body
+        const bodyLines = commit.body.split("\n").map((l) => `    ${l}`);
+        commitLines.push(...bodyLines);
+      }
+    }
+
+    if (commitLines.length > 0) {
+      const childBlock = codeBlock(commitLines.join("\n"));
+      await rateLimiter.schedule(() =>
+        notionClient.blocks.children.append({
+          block_id: toggleBlockId,
+          children: [childBlock],
+        }),
+      );
+    }
+  }
+}
+
+/** Format an ISO date string to a shorter human-readable format */
+function formatDate(isoDate: string): string {
+  if (!isoDate || isoDate === "unknown") return "unknown";
+  try {
+    const d = new Date(isoDate);
+    return d.toISOString().slice(0, 10);
+  } catch {
+    return isoDate;
+  }
+}
+
+/** Create a heading_2 block */
+function heading2(text: string): BlockObjectRequest {
+  return {
+    type: "heading_2",
+    heading_2: {
+      rich_text: [{ type: "text", text: { content: text } }],
+      color: "default",
+    },
+  };
+}
+
+/** Create a non-toggleable heading_3 block */
+function heading3(text: string): BlockObjectRequest {
+  return {
+    type: "heading_3",
+    heading_3: {
+      rich_text: [{ type: "text", text: { content: text } }],
+      color: "default",
+    },
+  };
+}
+
+/** Create a code block (plain text) */
+function codeBlock(content: string): BlockObjectRequest {
+  // Notion rich text elements are limited to 2000 chars each
+  const MAX_CHUNK = 2000;
+  const richText: Array<{ type: "text"; text: { content: string } }> = [];
+  let remaining = content;
+  while (remaining.length > 0) {
+    richText.push({
+      type: "text",
+      text: { content: remaining.slice(0, MAX_CHUNK) },
+    });
+    remaining = remaining.slice(MAX_CHUNK);
+  }
+  if (richText.length === 0) {
+    richText.push({ type: "text", text: { content: "" } });
+  }
+  return {
+    type: "code",
+    code: {
+      rich_text: richText,
+      language: "plain text",
+    },
+  };
+}
+
+/** Create a paragraph block */
+function paragraph(text: string): BlockObjectRequest {
+  return {
+    type: "paragraph",
+    paragraph: {
+      rich_text: [{ type: "text", text: { content: text } }],
+    },
+  };
 }
 
 /** Icon map for file types */

@@ -17,6 +17,7 @@ export interface UploadOptions {
   dryRun: boolean;
   concurrency: number;
   verbose: boolean;
+  git: boolean;
 }
 
 /** A node in the file tree */
@@ -50,4 +51,51 @@ export interface UploadSummary {
   skippedFiles: string[];
   rootPageId: string;
   elapsedMs: number;
+}
+
+
+/** Git context gathered from a repository */
+export interface GitContext {
+  remotes: Array<{ name: string; url: string }>;
+  currentBranch: string;
+  defaultBranch: string;
+  totalCommits: number;
+  repoAge: string;
+  lastCommitDate: string;
+  branches: Array<{
+    name: string;
+    lastCommitDate: string;
+    lastCommitHash: string;
+    isCurrentBranch: boolean;
+    commits: Array<{
+      hash: string;
+      shortHash: string;
+      date: string;
+      author: string;
+      email: string;
+      subject: string;
+      body?: string;
+    }>;
+  }>;
+  recentActivity: {
+    commitsLast7Days: Array<{
+      shortHash: string;
+      date: string;
+      author: string;
+      subject: string;
+      branches: string;
+    }>;
+    diffstatLast10: string;
+    hotFiles: Array<{ count: number; file: string }>;
+    activeContributors: Array<{ commits: number; name: string }>;
+  };
+  tags: Array<{ name: string; date: string; subject: string }>;
+  workingDirectory: {
+    staged: number;
+    unstaged: number;
+    untracked: number;
+    stashCount: number;
+  };
+  branchLimitApplied: boolean;
+  totalBranchCount: number;
 }
