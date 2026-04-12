@@ -1,0 +1,41 @@
+{
+  "name": "code-to-pages",
+  "version": "1.0.0",
+  "description": "CLI tool to upload codebases to Notion pages",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "code-to-pages": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lpke/code-to-pages.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "GPL-3.0-or-later",
+  "bugs": {
+    "url": "https://github.com/lpke/code-to-pages/issues"
+  },
+  "homepage": "https://github.com/lpke/code-to-pages#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@notionhq/client": "^5.17.0",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "dotenv": "^17.4.1",
+    "fast-glob": "^3.3.3",
+    "ora": "^9.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  }
+}
