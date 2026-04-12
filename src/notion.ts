@@ -26,7 +26,7 @@ export async function appendGitContextPage(
   ctx: GitContext,
 ): Promise<void> {
   // Create the child page
-  const pageId = await createNotionPage(parentPageId, "\u{1F500} Git Context", "\u{1F500}");
+const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
 
   // --- Build all top-level blocks ---
   const blocks: BlockObjectRequest[] = [];

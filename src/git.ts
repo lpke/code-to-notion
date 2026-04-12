@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import type { GitContext } from "./types.js";
 import * as logger from "./logger.js";
 
@@ -11,17 +11,16 @@ const BRANCH_TRUNCATE_THRESHOLD = 10;
  * Run a git command in the target directory. Returns stdout as a trimmed string.
  * Returns null if the command fails.
  */
-function git(cmd: string, cwd: string): string | null {
+function git(args: string[], cwd: string): string | null {
   try {
-    return execSync(`git ${cmd}`, {
+    return execFileSync("git", args, {
       cwd,
       encoding: "utf-8",
       maxBuffer: 10 * 1024 * 1024,
-      stdio: ["pipe", "pipe", "pipe"],
     }).trim();
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    logger.debug(`Git command failed: git ${cmd} — ${message}`);
+    logger.debug(`Git command failed: git ${args.join(" ")} — ${message}`);
     return null;
   }
 }
@@ -42,26 +41,26 @@ export async function gatherGitContext(
   }
 
   // --- 1. Repository Info ---
-  const remotes = parseRemotes(git("remote -v", absDir));
-  const currentBranch = git("branch --show-current", absDir) || "HEAD";
+  const remotes = parseRemotes(git(["remote", "-v"], absDir));
+  const currentBranch = git(["branch", "--show-current"], absDir) || "HEAD";
   const defaultBranch =
-    git("symbolic-ref refs/remotes/origin/HEAD --short", absDir)?.replace(
+    git(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"], absDir)?.replace(
       /^origin\//,
       "",
     ) || "unknown";
-  const totalCommitsStr = git("rev-list --count HEAD", absDir);
+  const totalCommitsStr = git(["rev-list", "--count", "HEAD"], absDir);
   const totalCommits = totalCommitsStr ? parseInt(totalCommitsStr, 10) : 0;
   const repoAge =
-    git("log --reverse --format=%aI", absDir)?.split("\n")[0] || "unknown";
-  const lastCommitDate = git("log -1 --format=%aI", absDir) || "unknown";
+    git(["log", "--reverse", "--format=%aI"], absDir)?.split("\n")[0] || "unknown";
+  const lastCommitDate = git(["log", "-1", "--format=%aI"], absDir) || "unknown";
 
   // --- 2. Branch Management ---
   const localBranchesRaw = git(
-    "branch --format=%(refname:short)|%(committerdate:iso-strict)|%(objectname:short)",
+    ["branch", "--format=%(refname:short)|%(committerdate:iso-strict)|%(objectname:short)"],
     absDir,
   );
   const remoteBranchesRaw = git(
-    "branch -r --format=%(refname:short)|%(committerdate:iso-strict)|%(objectname:short)",
+    ["branch", "-r", "--format=%(refname:short)|%(committerdate:iso-strict)|%(objectname:short)"],
     absDir,
   );
 
@@ -140,7 +139,7 @@ export async function gatherGitContext(
     const commitLimit = isCurrentBranch || isDefault ? 30 : 15;
 
     const commitLogRaw = git(
-      `log ${branch.name} --format=%H|%h|%aI|%an|%ae|%s -n ${commitLimit}`,
+      ["log", branch.name, "--format=%H|%h|%aI|%an|%ae|%s", "-n", String(commitLimit)],
       absDir,
     );
 
@@ -163,23 +162,25 @@ export async function gatherGitContext(
       }
     }
 
-    // Get full commit messages for the most recent 5 commits on the current branch
-    if (isCurrentBranch && commits.length > 0) {
+    // Get full commit messages for this branch
+    if (commits.length > 0) {
       const fullMessagesRaw = git(
-        `log ${branch.name} --format=%H|%B---COMMIT_END--- -n 5`,
+        ["log", branch.name, "--format=---COMMIT_START---%H%n%B---COMMIT_END---", "-n", String(commitLimit)],
         absDir,
       );
 
       if (fullMessagesRaw) {
         const commitBlocks = fullMessagesRaw
-          .split("---COMMIT_END---")
+          .split("---COMMIT_START---")
           .filter((b) => b.trim());
 
         for (const block of commitBlocks) {
-          const pipeIdx = block.indexOf("|");
-          if (pipeIdx === -1) continue;
-          const hash = block.slice(0, pipeIdx).trim();
-          const body = block.slice(pipeIdx + 1).trim();
+          const endIdx = block.indexOf("---COMMIT_END---");
+          const content = endIdx !== -1 ? block.slice(0, endIdx) : block;
+          const newlineIdx = content.indexOf("\n");
+          if (newlineIdx === -1) continue;
+          const hash = content.slice(0, newlineIdx).trim();
+          const body = content.slice(newlineIdx + 1).trim();
 
           // Find the matching commit and add the body
           const commit = commits.find((c) => c.hash === hash);
@@ -207,7 +208,7 @@ export async function gatherGitContext(
 
   // --- 4. Recent Changes (Last 7 Days) ---
   const recentCommitsRaw = git(
-    "log --all --after='7 days ago' --format=%h|%aI|%an|%s|%D --date=iso-strict",
+    ["log", "--all", "--after=7 days ago", "--format=%h|%aI|%an|%s|%D", "--date=iso-strict"],
     absDir,
   );
   const commitsLast7Days: GitContext["recentActivity"]["commitsLast7Days"] = [];
@@ -230,16 +231,19 @@ export async function gatherGitContext(
   // Diffstat for the last 10 commits on the current branch
   let diffstatLast10 = "";
   // Check how many commits are available
-  const commitCountStr = git("rev-list --count HEAD", absDir);
+  const commitCountStr = git(["rev-list", "--count", "HEAD"], absDir);
   const commitCount = commitCountStr ? parseInt(commitCountStr, 10) : 0;
   if (commitCount > 1) {
     const diffRange = commitCount >= 10 ? "HEAD~10..HEAD" : `HEAD~${commitCount - 1}..HEAD`;
-    diffstatLast10 = git(`diff --stat ${diffRange}`, absDir) || "";
+    diffstatLast10 = git(["diff", "--stat", diffRange], absDir) || "";
+  } else if (commitCount === 1) {
+    // Single commit — diff against the empty tree to show initial changes
+    diffstatLast10 = git(["diff", "--stat", "4b825dc642cb6eb9a060e54bf899d69f82cf7262", "HEAD"], absDir) || "";
   }
 
   // Files changed in the last 7 days (most frequently changed)
   const hotFilesRaw = git(
-    "log --all --after='7 days ago' --name-only --format=",
+    ["log", "--all", "--after=7 days ago", "--name-only", "--format="],
     absDir,
   );
   const hotFiles: GitContext["recentActivity"]["hotFiles"] = [];
@@ -260,7 +264,7 @@ export async function gatherGitContext(
 
   // Active contributors in the last 30 days
   const contributorsRaw = git(
-    "log --all --after='30 days ago' --format=%an <%ae>",
+    ["log", "--all", "--after=30 days ago", "--format=%an <%ae>"],
     absDir,
   );
   const activeContributors: GitContext["recentActivity"]["activeContributors"] =
@@ -282,7 +286,7 @@ export async function gatherGitContext(
 
   // --- 5. Tags ---
   const tagsRaw = git(
-    "tag --sort=-creatordate --format=%(refname:short)|%(creatordate:iso-strict)|%(subject)",
+    ["tag", "--sort=-creatordate", "--format=%(refname:short)|%(creatordate:iso-strict)|%(subject)"],
     absDir,
   );
   const tags: GitContext["tags"] = [];
@@ -302,7 +306,7 @@ export async function gatherGitContext(
   }
 
   // --- 6. Working Directory Status ---
-  const statusRaw = git("status --porcelain", absDir);
+  const statusRaw = git(["status", "--porcelain"], absDir);
   let staged = 0;
   let unstaged = 0;
   let untracked = 0;
@@ -320,7 +324,7 @@ export async function gatherGitContext(
     }
   }
 
-  const stashListRaw = git("stash list", absDir);
+  const stashListRaw = git(["stash", "list"], absDir);
   const stashCount = stashListRaw
     ? stashListRaw.split("\n").filter((l) => l.trim()).length
     : 0;
