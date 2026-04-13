@@ -4,40 +4,118 @@ import type { FileNode } from "./types.js";
 
 let verboseMode = false;
 let currentSpinner: Ora | null = null;
+let cancelled = false;
+let cleanupKeyListener: (() => void) | null = null;
 
 export function setVerbose(enabled: boolean): void {
   verboseMode = enabled;
 }
 
+// --- Cancellation ---
+
+export class CancelledError extends Error {
+  constructor() {
+    super("Upload cancelled by user");
+    this.name = "CancelledError";
+  }
+}
+
+export function isCancelled(): boolean {
+  return cancelled;
+}
+
+export function throwIfCancelled(): void {
+  if (cancelled) throw new CancelledError();
+}
+
+/**
+ * Start listening for cancellation signals: `q` keypress or ctrl+c.
+ * Call `stopCancellationListener()` to clean up.
+ */
+export function startCancellationListener(): void {
+  cancelled = false;
+
+  const onCancel = () => {
+    if (cancelled) {
+      // Second press — force exit
+      process.exit(1);
+    }
+    cancelled = true;
+    writeLineAboveSpinner(chalk.yellow("\n⚠ Cancelling after current operation completes... (press again to force quit)"));
+  };
+
+  // Listen for SIGINT (ctrl+c)
+  process.on("SIGINT", onCancel);
+
+  // Listen for `q` keypress (only if stdin is a TTY)
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.setEncoding("utf-8");
+
+    const onData = (key: string) => {
+      // ctrl+c comes through as \x03 in raw mode
+      if (key === "q" || key === "\x03") {
+        onCancel();
+      }
+    };
+    process.stdin.on("data", onData);
+
+    cleanupKeyListener = () => {
+      process.stdin.removeListener("data", onData);
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+      process.removeListener("SIGINT", onCancel);
+    };
+  } else {
+    cleanupKeyListener = () => {
+      process.removeListener("SIGINT", onCancel);
+    };
+  }
+}
+
+export function stopCancellationListener(): void {
+  if (cleanupKeyListener) {
+    cleanupKeyListener();
+    cleanupKeyListener = null;
+  }
+}
+
+// --- Logging (flicker-free) ---
+
+/**
+ * Write a line above the spinner without stopping/restarting it.
+ * This avoids the flicker caused by the previous pauseSpinner/resumeSpinner approach.
+ */
+function writeLineAboveSpinner(line: string): void {
+  if (currentSpinner?.isSpinning) {
+    currentSpinner.clear();
+    process.stderr.write(line + "\n");
+    currentSpinner.render();
+  } else {
+    process.stderr.write(line + "\n");
+  }
+}
+
 export function info(message: string): void {
-  pauseSpinner();
-  console.log(chalk.cyan(message));
-  resumeSpinner();
+  writeLineAboveSpinner(chalk.cyan(message));
 }
 
 export function success(message: string): void {
-  pauseSpinner();
-  console.log(chalk.green(message));
-  resumeSpinner();
+  writeLineAboveSpinner(chalk.green(message));
 }
 
 export function warn(message: string): void {
-  pauseSpinner();
-  console.log(chalk.yellow(message));
-  resumeSpinner();
+  writeLineAboveSpinner(chalk.yellow(message));
 }
 
 export function error(message: string): void {
-  pauseSpinner();
-  console.error(chalk.red(message));
-  resumeSpinner();
+  writeLineAboveSpinner(chalk.red(message));
 }
 
 export function debug(message: string): void {
   if (!verboseMode) return;
-  pauseSpinner();
-  console.log(chalk.dim(message));
-  resumeSpinner();
+  writeLineAboveSpinner(chalk.dim(message));
 }
 
 export function startSpinner(text: string): Ora {
@@ -76,18 +154,6 @@ export function stopSpinner(): void {
   }
 }
 
-function pauseSpinner(): void {
-  if (currentSpinner?.isSpinning) {
-    currentSpinner.stop();
-  }
-}
-
-function resumeSpinner(): void {
-  if (currentSpinner && !currentSpinner.isSpinning) {
-    currentSpinner.start();
-  }
-}
-
 export function printProgress(
   current: number,
   total: number,
@@ -106,6 +172,7 @@ export function printSummary(opts: {
   totalTime: number;
   errors: Array<{ filePath: string; error: Error }>;
   rootPageId: string;
+  wasCancelled?: boolean;
 }): void {
   stopSpinner();
 
@@ -113,9 +180,15 @@ export function printSummary(opts: {
   const timeStr = (opts.totalTime / 1000).toFixed(1);
 
   console.log("");
-  console.log(chalk.green("═".repeat(50)));
-  console.log(chalk.green.bold(" ✓ Upload complete!"));
-  console.log(chalk.green("═".repeat(50)));
+  if (opts.wasCancelled) {
+    console.log(chalk.yellow("═".repeat(50)));
+    console.log(chalk.yellow.bold(" ⚠ Upload cancelled"));
+    console.log(chalk.yellow("═".repeat(50)));
+  } else {
+    console.log(chalk.green("═".repeat(50)));
+    console.log(chalk.green.bold(" ✓ Upload complete!"));
+    console.log(chalk.green("═".repeat(50)));
+  }
   console.log(`  ${chalk.cyan("Pages created:")} ${opts.totalPages}`);
   console.log(`  ${chalk.cyan("Time elapsed:")}  ${timeStr}s`);
 
@@ -129,7 +202,8 @@ export function printSummary(opts: {
   }
 
   console.log(`  ${chalk.cyan("Notion page:")}   ${notionUrl}`);
-  console.log(chalk.green("═".repeat(50)));
+  const borderColor = opts.wasCancelled ? chalk.yellow : chalk.green;
+  console.log(borderColor("═".repeat(50)));
   console.log("");
 }
 
@@ -169,3 +243,4 @@ function printTreeChild(node: FileNode, linePrefix: string, childrenPrefix: stri
     }
   }
 }
+

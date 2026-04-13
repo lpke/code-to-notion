@@ -85,15 +85,20 @@ export async function upload(
   // Step 4: Initialise Notion client
   initNotion(config.notionApiToken, options.concurrency);
 
+  // Start listening for cancellation (q key / ctrl+c)
+  logger.startCancellationListener();
+
   const startTime = Date.now();
   const errors: UploadError[] = [];
   let pagesCreated = 0;
   let filesUploaded = 0;
 
+  let rootPageId = "";
+
   try {
     // Create root page
     logger.startSpinner(`Creating root page: ${projectName}`);
-    const rootPageId = await createNotionPage(
+    rootPageId = await createNotionPage(
       config.notionCodebasesPageId,
       projectName,
       "\uD83D\uDCE6",
@@ -158,6 +163,7 @@ export async function upload(
     const elapsedMs = Date.now() - startTime;
 
     // Step 6: Print summary
+    logger.stopCancellationListener();
     logger.printSummary({
       totalPages: pagesCreated,
       totalTime: elapsedMs,
@@ -165,6 +171,18 @@ export async function upload(
       rootPageId,
     });
   } catch (err: unknown) {
+    logger.stopCancellationListener();
+    if (err instanceof logger.CancelledError) {
+      const elapsedMs = Date.now() - startTime;
+      logger.printSummary({
+        totalPages: pagesCreated,
+        totalTime: elapsedMs,
+        errors,
+        rootPageId,
+        wasCancelled: true,
+      });
+      return;
+    }
     logger.failSpinner("Upload failed");
     handleTopLevelError(err);
     throw err;
@@ -188,6 +206,7 @@ async function uploadChildren(
   ctx: UploadContext,
 ): Promise<void> {
   for (const child of children) {
+    logger.throwIfCancelled();
     if (child.type === "directory") {
       await uploadDirectory(child, parentPageId, absRoot, ctx);
     } else {
@@ -211,6 +230,7 @@ async function uploadDirectory(
       await uploadChildren(node.children, pageId, absRoot, ctx);
     }
   } catch (err: unknown) {
+    if (err instanceof logger.CancelledError) throw err;
     const error = err instanceof Error ? err : new Error(String(err));
     logger.error(`Failed to create directory page: ${node.path} - ${error.message}`);
     ctx.errors.push({ filePath: node.path, error });
@@ -260,6 +280,7 @@ async function uploadFile(
       logger.debug(`  \u2713 ${node.path}`);
       return; // Success
     } catch (err: unknown) {
+      if (err instanceof logger.CancelledError) throw err;
       const error = err instanceof Error ? err : new Error(String(err));
 
       if (attempt < MAX_RETRIES) {
