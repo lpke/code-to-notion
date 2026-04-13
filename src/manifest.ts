@@ -138,6 +138,7 @@ export function buildManifest(
   directories: Record<string, ManifestDirEntry>,
   gitContextPageId?: string,
   existingCreatedAt?: string,
+  calloutBlockId?: string,
 ): Manifest {
   const now = new Date().toISOString();
   return {
@@ -146,6 +147,7 @@ export function buildManifest(
     updatedAt: now,
     rootPageId,
     ...(gitContextPageId ? { gitContextPageId } : {}),
+    ...(calloutBlockId ? { calloutBlockId } : {}),
     files,
     directories,
   };

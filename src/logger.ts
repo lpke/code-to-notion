@@ -274,6 +274,7 @@ export function logDiffSummary(diff: ManifestDiff): void {
 
 export function printUpdateSummary(opts: {
   pagesCreated: number;
+  pagesUpdated?: number;
   pagesDeleted: number;
   totalTime: number;
   errors: UploadError[];
@@ -317,6 +318,9 @@ export function printUpdateSummary(opts: {
   }
 
   console.log(`  ${chalk.cyan("Pages created:")} ${opts.pagesCreated}`);
+  if (opts.pagesUpdated && opts.pagesUpdated > 0) {
+    console.log(`  ${chalk.cyan("Pages updated:")} ${opts.pagesUpdated}`);
+  }
   console.log(`  ${chalk.cyan("Pages deleted:")} ${opts.pagesDeleted}`);
   console.log(`  ${chalk.cyan("Time elapsed:")}  ${timeStr}s`);
 

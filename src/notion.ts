@@ -28,8 +28,22 @@ export async function appendGitContextPage(
 ): Promise<string> {
   // Create the child page
   logger.debug("  Creating git context page...");
-const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
+  const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
   logger.debug("  Git context page created");
+
+  await populateGitContextPage(pageId, ctx);
+
+  return pageId;
+}
+
+/**
+ * Populate an existing git context page with structured git metadata blocks.
+ * Contains all block-building and appending logic.
+ */
+export async function populateGitContextPage(
+  pageId: string,
+  ctx: GitContext,
+): Promise<void> {
 
   // --- Build all top-level blocks ---
   const blocks: BlockObjectRequest[] = [];
@@ -303,8 +317,6 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
       );
     }
   }
-
-  return pageId;
 }
 
 /** Format an ISO date string to a shorter human-readable format */
@@ -528,15 +540,14 @@ export async function appendMetadataBlock(
 }
 
 /**
- * Append a summary callout block to the root project page.
+ * Build the text content for the root callout block.
  */
-export async function appendRootCallout(
-  pageId: string,
+export function buildRootCalloutText(
   sourceDir: string,
   fileCount: number,
   ignoredPatterns: string[],
   gitBranch?: string,
-): Promise<void> {
+): string {
   const timestamp = new Date().toISOString();
   let text = `\uD83D\uDCC2 Source: ${sourceDir}\n`;
   if (gitBranch) {
@@ -546,6 +557,21 @@ export async function appendRootCallout(
     `\uD83D\uDCCA Files: ${fileCount}\n` +
     `\uD83D\uDD52 Uploaded: ${timestamp}\n` +
     `\uD83D\uDEAB Ignored: ${ignoredPatterns.join(", ")}`;
+  return text;
+}
+
+/**
+ * Append a summary callout block to the root project page.
+ * Returns the created block ID.
+ */
+export async function appendRootCallout(
+  pageId: string,
+  sourceDir: string,
+  fileCount: number,
+  ignoredPatterns: string[],
+  gitBranch?: string,
+): Promise<string> {
+  const text = buildRootCalloutText(sourceDir, fileCount, ignoredPatterns, gitBranch);
 
   const block: BlockObjectRequest = {
     type: "callout",
@@ -556,12 +582,13 @@ export async function appendRootCallout(
     },
   };
 
-  await rateLimiter.schedule(() =>
+  const response = await rateLimiter.schedule(() =>
     notionClient.blocks.children.append({
       block_id: pageId,
       children: [block],
     }),
   );
+  return response.results[0].id;
 }
 
 
@@ -635,6 +662,17 @@ export async function listAllChildren(
   } while (cursor);
 
   return all;
+}
+
+/**
+ * Update a block in-place via the Notion blocks.update API.
+ * The caller provides the block type key and its properties as blockData.
+ * Example: updateBlock(id, { callout: { rich_text: [...], icon: ..., color: ... } })
+ */
+export async function updateBlock(blockId: string, blockData: Record<string, unknown>): Promise<void> {
+  await rateLimiter.schedule(() =>
+    notionClient.blocks.update({ block_id: blockId, ...blockData }),
+  );
 }
 
 /**

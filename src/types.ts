@@ -122,6 +122,7 @@ export interface Manifest {
   updatedAt: string;
   rootPageId: string;
   gitContextPageId?: string;
+  calloutBlockId?: string;
   files: Record<string, ManifestFileEntry>;
   directories: Record<string, ManifestDirEntry>;
 }

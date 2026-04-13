@@ -22,12 +22,16 @@ import {
   appendCodeBlocks,
   appendMetadataBlock,
   appendRootCallout,
+  buildRootCalloutText,
   appendGitContextPage,
+  populateGitContextPage,
+  updateBlock,
   writeManifest,
   findChildPageByTitle,
   deleteBlock,
   readManifest,
   listAllChildren,
+  clearPageContent,
 } from "./notion.js";
 import * as logger from "./logger.js";
 import { gatherGitContext } from "./git.js";
@@ -233,7 +237,7 @@ async function freshUpload(
       }
     }
 
-    await appendRootCallout(
+    const calloutBlockId = await appendRootCallout(
       rootPageId,
       absDir,
       fileCount,
@@ -280,6 +284,8 @@ async function freshUpload(
         manifestBuilder.files,
         manifestBuilder.directories,
         gitContextPageId,
+        undefined,
+        calloutBlockId,
       );
       await writeManifest(rootPageId, manifest);
       pagesCreated++;
@@ -393,6 +399,7 @@ async function updateExisting(
   const startTime = Date.now();
   const errors: UploadError[] = [];
   let pagesCreated = 0;
+  let pagesUpdated = 0;
   let pagesDeleted = 0;
 
   try {
@@ -400,25 +407,9 @@ async function updateExisting(
     // Phase 1: Deletions
     // ---------------------------------------------------------------
 
-    const totalDeletions = diff.modified.length + diff.deleted.length + diff.deletedDirs.length;
+    const totalDeletions = diff.deleted.length + diff.deletedDirs.length;
     if (totalDeletions > 0) {
-      logger.debug(`Phase 1: Deleting ${diff.modified.length + diff.deleted.length} file(s) and ${diff.deletedDirs.length} directory(ies)...`);
-    }
-
-    // Delete modified file pages (will be recreated in Phase 3)
-    for (const filePath of diff.modified) {
-      logger.throwIfCancelled();
-      const entry = manifest.files[filePath];
-      if (entry) {
-        try {
-          logger.debug(`Deleting modified: ${filePath}`);
-          await deleteBlock(entry.pageId);
-          pagesDeleted++;
-          logger.debug(`  Deleted: ${filePath}`);
-        } catch {
-          logger.warn(`Could not delete page for modified file: ${filePath} (may have been manually removed)`);
-        }
-      }
+      logger.debug(`Phase 1: Deleting ${diff.deleted.length} removed file(s) and ${diff.deletedDirs.length} removed directory(ies)...`);
     }
 
     // Delete removed file pages
@@ -498,10 +489,11 @@ async function updateExisting(
     }
 
     // ---------------------------------------------------------------
-    // Phase 3: File creations (added + modified)
+    // Phase 3: File operations (update modified + create added)
     // ---------------------------------------------------------------
 
-    const filesToUpload = [...diff.added, ...diff.modified];
+    const totalUploads = diff.modified.length + diff.added.length;
+    let uploadCounter = 0;
 
     // Start with unchanged file entries from the old manifest
     const newFileEntries: Record<string, ManifestFileEntry> = {};
@@ -509,9 +501,46 @@ async function updateExisting(
       newFileEntries[filePath] = manifest.files[filePath];
     }
 
-    for (let i = 0; i < filesToUpload.length; i++) {
+    // Sub-phase 3a: Update modified files in-place
+    for (const filePath of diff.modified) {
       logger.throwIfCancelled();
-      const filePath = filesToUpload[i];
+      const localInfo = localFiles.get(filePath);
+      if (!localInfo) continue;
+      const existingPageId = manifest.files[filePath]?.pageId;
+      if (!existingPageId) continue;
+
+      uploadCounter++;
+      const label = "Updating";
+      logger.printProgress(uploadCounter, totalUploads, `${label} ${filePath}`);
+
+      try {
+        const absPath = path.join(absDir, filePath);
+        const fileName = path.basename(filePath);
+        const language = detectLanguage(fileName);
+
+        // Clear existing page content (metadata callout + code blocks)
+        await clearPageContent(existingPageId);
+
+        // Re-append new content
+        const { content, truncated } = readFileContent(absPath, localInfo.size);
+        await appendMetadataBlock(existingPageId, filePath, formatBytes(localInfo.size), truncated, localInfo.hash);
+        const chunks = chunkFileContent(content);
+        await appendCodeBlocks(existingPageId, chunks, language || "plain text");
+
+        newFileEntries[filePath] = { pageId: existingPageId, hash: localInfo.hash, size: localInfo.size };
+        pagesUpdated++;
+        logger.debug(`  \u2713 ${filePath} (updated in-place)`);
+      } catch (err: unknown) {
+        if (err instanceof logger.CancelledError) throw err;
+        const error = err instanceof Error ? err : new Error(String(err));
+        logger.error(`  \u2717 Failed: ${filePath} - ${error.message}`);
+        errors.push({ filePath, error });
+      }
+    }
+
+    // Sub-phase 3b: Create new files (added only)
+    for (const filePath of diff.added) {
+      logger.throwIfCancelled();
       const localInfo = localFiles.get(filePath);
       if (!localInfo) continue;
 
@@ -522,17 +551,15 @@ async function updateExisting(
       } else if (dirPageIds[parentDir]) {
         parentPageId = dirPageIds[parentDir].pageId;
       } else {
-        // TODO: If the parent dir existed in the manifest but its Notion page was
-        // manually deleted, we could attempt to recreate it. For now, we error and
-        // the user can --replace to fix.
         const error = new Error(`Parent directory ${parentDir} not found`);
         logger.error(`Cannot create file ${filePath}: ${error.message}`);
         errors.push({ filePath, error });
         continue;
       }
 
-      const label = diff.added.includes(filePath) ? "Adding" : "Updating";
-      logger.printProgress(i + 1, filesToUpload.length, `${label} ${filePath}`);
+      uploadCounter++;
+      const label = "Adding";
+      logger.printProgress(uploadCounter, totalUploads, `${label} ${filePath}`);
 
       try {
         const fileName = path.basename(filePath);
@@ -565,51 +592,76 @@ async function updateExisting(
     }
 
     // ---------------------------------------------------------------
-    // Phase 4: Git context + root callout
+    // Phase 4: Root callout + Git context
     // ---------------------------------------------------------------
+
+    let newCalloutBlockId = manifest.calloutBlockId;
+
+    try {
+      logger.debug("Updating root callout...");
+      const ignorePatternsDisplay = getIgnorePatternsDisplay(absDir, options.ignore);
+      const calloutText = buildRootCalloutText(
+        absDir, localFiles.size, ignorePatternsDisplay, gitContext?.currentBranch
+      );
+
+      if (manifest.calloutBlockId) {
+        // In-place update via blocks.update (1 API call)
+        await updateBlock(manifest.calloutBlockId, {
+          callout: {
+            rich_text: [{ type: "text", text: { content: calloutText } }],
+            icon: { type: "emoji", emoji: "\uD83D\uDCE6" },
+            color: "blue_background",
+          },
+        });
+        logger.debug("\u2713 Root callout updated in-place");
+      } else {
+        // Fallback for old manifests: find callout by listing children
+        const rootChildren = await listAllChildren(existingRootPageId);
+        const calloutBlock = rootChildren.find((b) => b.type === "callout");
+        if (calloutBlock) {
+          await updateBlock(calloutBlock.id, {
+            callout: {
+              rich_text: [{ type: "text", text: { content: calloutText } }],
+              icon: { type: "emoji", emoji: "\uD83D\uDCE6" },
+              color: "blue_background",
+            },
+          });
+          newCalloutBlockId = calloutBlock.id;
+          logger.debug("\u2713 Root callout updated in-place (found via fallback)");
+        } else {
+          newCalloutBlockId = await appendRootCallout(
+            existingRootPageId, absDir, localFiles.size, ignorePatternsDisplay, gitContext?.currentBranch
+          );
+          logger.debug("\u2713 Root callout created (none found)");
+        }
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(`Root callout update failed (continuing): ${message}`);
+    }
 
     let newGitContextPageId = manifest.gitContextPageId;
 
     if (includeGit && gitContext) {
       try {
-        logger.updateSpinner("Updating git context page...");
         if (manifest.gitContextPageId) {
-          try {
-            await deleteBlock(manifest.gitContextPageId);
-            pagesDeleted++;
-          } catch {
-            // Page may have been manually deleted — ignore
-          }
+          // In-place: clear children and repopulate (page stays at its position)
+          logger.updateSpinner("Updating git context page...");
+          await clearPageContent(manifest.gitContextPageId);
+          await populateGitContextPage(manifest.gitContextPageId, gitContext);
+          logger.debug("\u2713 Git context page updated in-place");
+          // newGitContextPageId stays the same
+        } else {
+          // No existing page — create from scratch
+          logger.updateSpinner("Creating git context page...");
+          newGitContextPageId = await appendGitContextPage(existingRootPageId, gitContext);
+          pagesCreated++;
+          logger.debug("\u2713 Git context page created");
         }
-        newGitContextPageId = await appendGitContextPage(existingRootPageId, gitContext);
-        pagesCreated++;
-        logger.debug("\u2713 Git context updated");
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         logger.warn(`Git context update failed (continuing): ${message}`);
       }
-    }
-
-    // Update root callout
-    try {
-      logger.debug("Updating root callout...");
-      const rootChildren = await listAllChildren(existingRootPageId);
-      const calloutBlock = rootChildren.find((b) => b.type === "callout");
-      if (calloutBlock) {
-        await deleteBlock(calloutBlock.id);
-        pagesDeleted++;
-      }
-      const ignorePatternsDisplay = getIgnorePatternsDisplay(absDir, options.ignore);
-      await appendRootCallout(
-        existingRootPageId,
-        absDir,
-        localFiles.size,
-        ignorePatternsDisplay,
-        gitContext?.currentBranch,
-      );
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.warn(`Root callout update failed (continuing): ${message}`);
     }
 
     // ---------------------------------------------------------------
@@ -624,6 +676,7 @@ async function updateExisting(
         dirPageIds,
         newGitContextPageId,
         manifest.createdAt,
+        newCalloutBlockId,
       );
       await writeManifest(existingRootPageId, updatedManifest, manifestPageId);
       logger.debug("Manifest updated");
@@ -640,6 +693,7 @@ async function updateExisting(
     logger.stopCancellationListener();
     logger.printUpdateSummary({
       pagesCreated,
+      pagesUpdated,
       pagesDeleted,
       totalTime: elapsedMs,
       errors,
@@ -652,6 +706,7 @@ async function updateExisting(
       const elapsedMs = Date.now() - startTime;
       logger.printUpdateSummary({
         pagesCreated,
+        pagesUpdated,
         pagesDeleted,
         totalTime: elapsedMs,
         errors,
