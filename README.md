@@ -54,7 +54,7 @@ code-to-pages ./my-project --ignore "**/*.test.ts" --verbose --concurrency 3
 
 ## Git Context
 
-When the target is a git repo, a "🔀 Git Context" page is created with repo info, recent activity, per-branch commit details with diffstats, and tags. Repos with >20 branches skip git context; >10 branches limits to the 10 most recent. Use `--no-git` to disable.
+When the target is a git repo, a "🔀 Git Context" page is created with repo info, recent activity, per-branch commit details with diffstats, and tags. Repos with >20 branches are limited to the 20 most recently touched (default branch always included). Use `--no-git` to disable.
 
 ## License
 

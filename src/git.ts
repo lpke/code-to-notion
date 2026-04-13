@@ -4,8 +4,7 @@ import { execFileSync } from "node:child_process";
 import type { GitContext } from "./types.js";
 import * as logger from "./logger.js";
 
-const MAX_BRANCHES = 20;
-const BRANCH_TRUNCATE_THRESHOLD = 10;
+const BRANCH_LIMIT = 20;
 
 /**
  * Run a git command in the target directory. Returns stdout as a trimmed string.
@@ -27,7 +26,9 @@ function git(args: string[], cwd: string): string | null {
 
 /**
  * Gather comprehensive git context from a target directory.
- * Returns null if the directory is not a git repo or if branch count exceeds 20.
+ * Returns null if the directory is not a git repo.
+ * If there are more than 20 branches, only the 20 most recently touched are included
+ * (the default branch is always included).
  */
 export async function gatherGitContext(
   targetDir: string,
@@ -103,14 +104,6 @@ export async function gatherGitContext(
 
   const totalBranchCount = branchMap.size;
 
-  // Check branch limits
-  if (totalBranchCount > MAX_BRANCHES) {
-    logger.error(
-      `Repository has ${totalBranchCount} branches which exceeds the maximum of ${MAX_BRANCHES}. Skipping git context.`,
-    );
-    return null;
-  }
-
   let branchLimitApplied = false;
 
   // Sort branches by most recent commit date descending
@@ -118,11 +111,19 @@ export async function gatherGitContext(
     b.lastCommitDate.localeCompare(a.lastCommitDate),
   );
 
-  if (totalBranchCount > BRANCH_TRUNCATE_THRESHOLD) {
+  if (totalBranchCount > BRANCH_LIMIT) {
     logger.warn(
-      `Repository has ${totalBranchCount} branches. Only the ${BRANCH_TRUNCATE_THRESHOLD} most recent will be included.`,
+      `Repository has ${totalBranchCount} branches. Only the ${BRANCH_LIMIT} most recent will be included.`,
     );
-    sortedBranches = sortedBranches.slice(0, BRANCH_TRUNCATE_THRESHOLD);
+
+    // Always include the default branch, even if it's not in the top N by date
+    const defaultBranchEntry = sortedBranches.find((b) => b.name === defaultBranch);
+    const topBranches = sortedBranches.slice(0, BRANCH_LIMIT);
+    if (defaultBranchEntry && !topBranches.some((b) => b.name === defaultBranch)) {
+      // Replace the last entry with the default branch
+      topBranches[topBranches.length - 1] = defaultBranchEntry;
+    }
+    sortedBranches = topBranches;
     branchLimitApplied = true;
   }
 
