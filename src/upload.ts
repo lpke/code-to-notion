@@ -105,27 +105,37 @@ export async function upload(
       absDir,
       options.ignore,
     );
+
+    // Step 4b: Gather git context (before root callout so we can include branch info)
+    let gitContext: Awaited<ReturnType<typeof gatherGitContext>> = null;
+    if (options.git) {
+      try {
+        logger.startSpinner("\uD83D\uDCDD Gathering git context...");
+        gitContext = await gatherGitContext(absDir);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(`Git context failed (continuing with upload): ${message}`);
+      }
+    }
+
     await appendRootCallout(
       rootPageId,
       absDir,
       fileCount,
       ignorePatternsDisplay,
+      gitContext?.currentBranch,
     );
 
-    // Step 4b: Gather and upload git context (before file tree)
-    if (options.git) {
+    // Upload git context page
+    if (gitContext) {
       try {
-        logger.startSpinner("\uD83D\uDCDD Gathering git context...");
-        const gitContext = await gatherGitContext(absDir);
-        if (gitContext) {
-          logger.updateSpinner("\uD83D\uDCDD Uploading git context...");
-          await appendGitContextPage(rootPageId, gitContext);
-          pagesCreated++;
-          logger.debug("\u2713 Git context uploaded");
-        }
+        logger.updateSpinner("\uD83D\uDCDD Uploading git context...");
+        await appendGitContextPage(rootPageId, gitContext);
+        pagesCreated++;
+        logger.debug("\u2713 Git context uploaded");
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        logger.warn(`Git context failed (continuing with upload): ${message}`);
+        logger.warn(`Git context upload failed (continuing with upload): ${message}`);
       }
     }
 

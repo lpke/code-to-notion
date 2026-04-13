@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function loadConfig(): Config {
   // Resolve .env from the project root (parent of dist/ or src/)
   const projectRoot = path.resolve(__dirname, "..");
-  dotenv.config({ path: path.join(projectRoot, ".env") });
+  dotenv.config({ path: path.join(projectRoot, ".env"), quiet: true });
 
   const notionApiToken = process.env.NOTION_API_TOKEN;
   const notionCodebasesPageId = process.env.NOTION_CODEBASES_PAGE_ID;

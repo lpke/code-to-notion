@@ -85,50 +85,9 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
   }
 
   // Diffstat
-  if (ctx.recentActivity.diffstatLast100) {
-    blocks.push(heading3("Diffstat (Last 100 Commits)"));
-    blocks.push(codeBlock(ctx.recentActivity.diffstatLast100));
-  }
-
-  // 3. Working Directory heading
-  blocks.push(heading2("Working Directory"));
-
-  const wd = ctx.workingDirectory;
-  const isClean =
-    wd.staged === 0 &&
-    wd.unstaged === 0 &&
-    wd.untracked === 0 &&
-    wd.stashCount === 0;
-
-  if (isClean) {
-    blocks.push({
-      type: "callout",
-      callout: {
-        rich_text: [
-          { type: "text", text: { content: "\u2705 Clean working directory" } },
-        ],
-        icon: { type: "emoji", emoji: "\u2705" },
-        color: "gray_background",
-      },
-    });
-  } else {
-    blocks.push({
-      type: "callout",
-      callout: {
-        rich_text: [
-          {
-            type: "text",
-            text: {
-              content:
-                `Staged: ${wd.staged}, Unstaged: ${wd.unstaged}, ` +
-                `Untracked: ${wd.untracked}, Stashes: ${wd.stashCount}`,
-            },
-          },
-        ],
-        icon: { type: "emoji", emoji: "\u{1F4DD}" },
-        color: "gray_background",
-      },
-    });
+  if (ctx.recentActivity.diffstatLast20) {
+    blocks.push(heading3("Diffstat (Last 20 Commits)"));
+    blocks.push(codeBlock(ctx.recentActivity.diffstatLast20));
   }
 
   // 4. Branches heading
@@ -196,44 +155,84 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
     return h3?.is_toggleable === true;
   });
 
-  // Map branch names to toggle block IDs
+  // For each branch, create per-commit toggle blocks inside the branch H3
   for (let i = 0; i < ctx.branches.length && i < toggleBlocks.length; i++) {
     const branch = ctx.branches[i];
     const toggleBlockId = toggleBlocks[i].id;
 
-    // Build the commit log content for this branch
-    const commitLines: string[] = [];
+    if (branch.commits.length === 0) continue;
+
+    // First pass: build commit toggle blocks (with body paragraphs as children,
+    // but WITHOUT diffstat sub-toggles to stay within Notion's 2-level nesting limit)
+    const commitToggleChildren: BlockObjectRequest[] = [];
     for (const commit of branch.commits) {
-      commitLines.push(
-        `${commit.shortHash} | ${formatDate(commit.date)} | ${commit.author} | ${commit.subject}`,
-      );
+      const toggleText = `${commit.shortHash} | ${formatDate(commit.date)} | ${commit.author} | ${commit.subject}`;
+
+      // Children inside the commit toggle (level 2 relative to branch H3)
+      const innerChildren: BlockObjectRequest[] = [];
       if (commit.body) {
-        // Indent the body
-        const bodyLines = commit.body.split("\n").map((l) => `    ${l}`);
-        commitLines.push(...bodyLines);
+        innerChildren.push(paragraph(commit.body));
       }
-      if (commit.diffstat) {
-        // Indent each diffstat line
-        const diffstatLines = commit.diffstat.split("\n").map((l) => `    ${l}`);
-        commitLines.push(...diffstatLines);
-      }
-      if (commit.diffstat) {
-        // Add blank line after commits with diffstats for visual separation
-        commitLines.push("");
-      }
+
+      commitToggleChildren.push({
+        type: "toggle",
+        toggle: {
+          rich_text: [{ type: "text", text: { content: toggleText } }],
+          color: "default",
+          ...(innerChildren.length > 0 ? { children: innerChildren } : {}),
+        },
+      } as BlockObjectRequest);
     }
 
-    // Remove trailing blank line if present
-    while (commitLines.length > 0 && commitLines[commitLines.length - 1] === "") {
-      commitLines.pop();
-    }
-
-    if (commitLines.length > 0) {
-      const childBlock = codeBlock(commitLines.join("\n"));
+    // Append commit toggles in batches of 100 (Notion limit)
+    for (let j = 0; j < commitToggleChildren.length; j += 100) {
+      const batch = commitToggleChildren.slice(j, j + 100);
       await rateLimiter.schedule(() =>
         notionClient.blocks.children.append({
           block_id: toggleBlockId,
-          children: [childBlock],
+          children: batch,
+        }),
+      );
+    }
+
+    // Second pass: fetch the newly created commit toggle block IDs,
+    // then append diffstat sub-toggles into each commit toggle that has a diffstat
+    const commitsWithDiffstat = branch.commits
+      .map((commit, idx) => ({ commit, idx }))
+      .filter(({ commit }) => !!commit.diffstat);
+
+    if (commitsWithDiffstat.length === 0) continue;
+
+    // Fetch all children of the branch toggle to get commit toggle IDs
+    const branchChildren = await rateLimiter.schedule(() =>
+      notionClient.blocks.children.list({
+        block_id: toggleBlockId,
+        page_size: 100,
+      }),
+    );
+
+    // The commit toggle blocks should be in order
+    const commitBlocks = branchChildren.results.filter(
+      (block: Record<string, unknown>) => block.type === "toggle",
+    );
+
+    for (const { commit, idx } of commitsWithDiffstat) {
+      if (idx >= commitBlocks.length) break;
+      const commitBlockId = commitBlocks[idx].id;
+
+      const diffstatToggle: BlockObjectRequest = {
+        type: "toggle",
+        toggle: {
+          rich_text: [{ type: "text", text: { content: "Diffstat" } }],
+          color: "default",
+          children: [codeBlock(commit.diffstat!)],
+        },
+      } as BlockObjectRequest;
+
+      await rateLimiter.schedule(() =>
+        notionClient.blocks.children.append({
+          block_id: commitBlockId,
+          children: [diffstatToggle],
         }),
       );
     }
@@ -461,10 +460,14 @@ export async function appendRootCallout(
   sourceDir: string,
   fileCount: number,
   ignoredPatterns: string[],
+  gitBranch?: string,
 ): Promise<void> {
   const timestamp = new Date().toISOString();
-  const text =
-    `\uD83D\uDCC2 Source: ${sourceDir}\n` +
+  let text = `\uD83D\uDCC2 Source: ${sourceDir}\n`;
+  if (gitBranch) {
+    text += `\uD83D\uDD00 Git branch: ${gitBranch}\n`;
+  }
+  text +=
     `\uD83D\uDCCA Files: ${fileCount}\n` +
     `\uD83D\uDD52 Uploaded: ${timestamp}\n` +
     `\uD83D\uDEAB Ignored: ${ignoredPatterns.join(", ")}`;

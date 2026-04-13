@@ -86,17 +86,11 @@ export interface GitContext {
       subject: string;
       branches: string;
     }>;
-    diffstatLast100: string;
+    diffstatLast20: string;
     hotFiles: Array<{ count: number; file: string }>;
     activeContributors: Array<{ commits: number; name: string }>;
   };
   tags: Array<{ name: string; date: string; subject: string }>;
-  workingDirectory: {
-    staged: number;
-    unstaged: number;
-    untracked: number;
-    stashCount: number;
-  };
   branchLimitApplied: boolean;
   totalBranchCount: number;
 }

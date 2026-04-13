@@ -43,11 +43,7 @@ export async function gatherGitContext(
   // --- 1. Repository Info ---
   const remotes = parseRemotes(git(["remote", "-v"], absDir));
   const currentBranch = git(["branch", "--show-current"], absDir) || "HEAD";
-  const defaultBranch =
-    git(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"], absDir)?.replace(
-      /^origin\//,
-      "",
-    ) || "unknown";
+  const defaultBranch = detectDefaultBranch(absDir);
   const totalCommitsStr = git(["rev-list", "--count", "HEAD"], absDir);
   const totalCommits = totalCommitsStr ? parseInt(totalCommitsStr, 10) : 0;
   const repoAge =
@@ -251,17 +247,17 @@ export async function gatherGitContext(
     }
   }
 
-  // Diffstat for the last 100 commits on the current branch
-  let diffstatLast100 = "";
+  // Diffstat for the last 20 commits on the current branch
+  let diffstatLast20 = "";
   // Check how many commits are available
   const commitCountStr = git(["rev-list", "--count", "HEAD"], absDir);
   const commitCount = commitCountStr ? parseInt(commitCountStr, 10) : 0;
   if (commitCount > 1) {
-    const diffRange = commitCount >= 100 ? "HEAD~100..HEAD" : `HEAD~${commitCount - 1}..HEAD`;
-    diffstatLast100 = git(["diff", "--stat", diffRange], absDir) || "";
+    const diffRange = commitCount >= 20 ? "HEAD~20..HEAD" : `HEAD~${commitCount - 1}..HEAD`;
+    diffstatLast20 = git(["diff", "--stat", diffRange], absDir) || "";
   } else if (commitCount === 1) {
     // Single commit — diff against the empty tree to show initial changes
-    diffstatLast100 = git(["diff", "--stat", "4b825dc642cb6eb9a060e54bf899d69f82cf7262", "HEAD"], absDir) || "";
+    diffstatLast20 = git(["diff", "--stat", "4b825dc642cb6eb9a060e54bf899d69f82cf7262", "HEAD"], absDir) || "";
   }
 
   // Files changed in the last 7 days (most frequently changed)
@@ -328,30 +324,6 @@ export async function gatherGitContext(
     }
   }
 
-  // --- 6. Working Directory Status ---
-  const statusRaw = git(["status", "--porcelain"], absDir);
-  let staged = 0;
-  let unstaged = 0;
-  let untracked = 0;
-  if (statusRaw) {
-    for (const line of statusRaw.split("\n")) {
-      if (!line) continue;
-      const x = line[0]; // index status
-      const y = line[1]; // worktree status
-      if (x === "?" && y === "?") {
-        untracked++;
-      } else {
-        if (x && x !== " " && x !== "?") staged++;
-        if (y && y !== " " && y !== "?") unstaged++;
-      }
-    }
-  }
-
-  const stashListRaw = git(["stash", "list"], absDir);
-  const stashCount = stashListRaw
-    ? stashListRaw.split("\n").filter((l) => l.trim()).length
-    : 0;
-
   return {
     remotes,
     currentBranch,
@@ -362,17 +334,11 @@ export async function gatherGitContext(
     branches,
     recentActivity: {
       commitsLast7Days,
-      diffstatLast100,
+      diffstatLast20,
       hotFiles,
       activeContributors,
     },
     tags,
-    workingDirectory: {
-      staged,
-      unstaged,
-      untracked,
-      stashCount,
-    },
     branchLimitApplied,
     totalBranchCount,
   };
@@ -403,4 +369,38 @@ function parseRemotes(
   }
 
   return remotes;
+}
+
+/**
+ * Detect the default branch for the repository using multiple strategies:
+ * 1. git symbolic-ref refs/remotes/origin/HEAD (works when the ref exists)
+ * 2. git ls-remote --symref origin HEAD (queries the remote directly)
+ * 3. Fall back to "main" or "master" if either exists locally
+ */
+function detectDefaultBranch(cwd: string): string {
+  // Strategy 1: local symbolic ref (fast, no network)
+  const symref = git(["symbolic-ref", "refs/remotes/origin/HEAD", "--short"], cwd);
+  if (symref) {
+    return symref.replace(/^origin\//, "");
+  }
+
+  // Strategy 2: ask the remote (requires network but works when strategy 1 fails)
+  const lsRemote = git(["ls-remote", "--symref", "origin", "HEAD"], cwd);
+  if (lsRemote) {
+    // Output looks like: "ref: refs/heads/main\tHEAD\n<hash>\tHEAD"
+    const match = lsRemote.match(/ref:\s+refs\/heads\/(\S+)/);
+    if (match) {
+      return match[1];
+    }
+  }
+
+  // Strategy 3: check for common default branch names locally
+  const localBranches = git(["branch", "--format=%(refname:short)"], cwd);
+  if (localBranches) {
+    const branches = localBranches.split("\n").map((b) => b.trim());
+    if (branches.includes("main")) return "main";
+    if (branches.includes("master")) return "master";
+  }
+
+  return "unknown";
 }
