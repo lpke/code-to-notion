@@ -1,4 +1,4 @@
-// Shared TypeScript types for code-to-pages
+// Shared TypeScript types for code-to-notion
 
 import type { LanguageRequest } from "@notionhq/client/build/src/api-endpoints/common.js";
 

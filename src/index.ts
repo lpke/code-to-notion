@@ -11,7 +11,7 @@ import type { UploadOptions } from "./types.js";
 const program = new Command();
 
 program
-  .name("code-to-pages")
+  .name("code-to-notion")
   .description("Upload codebases to Notion pages")
   .version("1.0.0")
   .argument("<dir>", "Target directory to upload")

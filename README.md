@@ -1,4 +1,4 @@
-# code-to-pages
+# code-to-notion
 
 A CLI tool that takes a directory and uploads it to Notion — preserving folder structure, syntax-highlighting files, and generating a git context page with branch history, diffstats, and recent activity. Useful for giving [Notion AI](https://www.notion.so/product/ai) full visibility into your project.
 
@@ -16,8 +16,8 @@ A CLI tool that takes a directory and uploads it to Notion — preserving folder
 **Requires Node.js >= 18**
 
 ```sh
-git clone https://github.com/lpke/code-to-pages.git
-cd code-to-pages
+git clone https://github.com/lpke/code-to-notion.git
+cd code-to-notion
 npm install && npm run build
 cp .env.example .env
 ```
@@ -30,12 +30,12 @@ Fill in `.env` with:
 ## Usage
 
 ```sh
-code-to-pages <dir> [options]
+code-to-notion <dir> [options]
 ```
 
 > The above assumes you've run `npm link` from the repo, or added a shell alias:
 > ```sh
-> alias code-to-pages="node /path/to/code-to-pages/dist/index.js"
+> alias code-to-notion="node /path/to/code-to-notion/dist/index.js"
 > ```
 
 | Option | Description |
@@ -49,9 +49,9 @@ code-to-pages <dir> [options]
 | `--verbose` | Detailed per-file progress |
 
 ```sh
-code-to-pages ./my-project --dry-run
-code-to-pages ./my-project --name "My Project" --only src config
-code-to-pages ./my-project --ignore "**/*.test.ts" --verbose
+code-to-notion ./my-project --dry-run
+code-to-notion ./my-project --name "My Project" --only src config
+code-to-notion ./my-project --ignore "**/*.test.ts" --verbose
 ```
 
 ## Git Context
