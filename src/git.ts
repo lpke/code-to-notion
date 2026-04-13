@@ -141,8 +141,11 @@ export async function gatherGitContext(
 
   for (const branch of sortedBranches) {
     const isCurrentBranch = branch.name === currentBranch;
-    const isDefault = branch.name === defaultBranch;
-    const commitLimit = isCurrentBranch || isDefault ? 30 : 15;
+    const commitLimit = 50;
+
+    // Get total commit count for this branch (to detect truncation)
+    const totalBranchCommitsStr = git(["rev-list", "--count", branch.name], absDir);
+    const totalBranchCommits = totalBranchCommitsStr ? parseInt(totalBranchCommitsStr, 10) : 0;
 
     const commitLogRaw = git(
       ["log", branch.name, "--format=%H|%h|%aI|%an|%ae|%s", "-n", String(commitLimit)],
@@ -203,10 +206,10 @@ export async function gatherGitContext(
       }
     }
 
-    // Get per-commit diffstats for up to the last 10 commits on this branch
+    // Get per-commit diffstats for up to the last 50 commits on this branch
     if (commits.length > 0) {
       const diffstatRaw = git(
-        ["log", branch.name, "--format=---DIFFSTAT_START---%h", "--stat", "-n", "10"],
+        ["log", branch.name, "--format=---DIFFSTAT_START---%h", "--stat", "-n", String(commitLimit)],
         absDir,
       );
 
@@ -231,6 +234,7 @@ export async function gatherGitContext(
       lastCommitDate: branch.lastCommitDate,
       lastCommitHash: branch.lastCommitHash,
       isCurrentBranch,
+      totalCommitCount: totalBranchCommits,
       commits,
     });
   }
@@ -314,15 +318,18 @@ export async function gatherGitContext(
   }
 
   // --- 5. Tags ---
+  const TAG_LIMIT = 10;
   const tagsRaw = git(
     ["tag", "--sort=-creatordate", "--format=%(refname:short)|%(creatordate:iso-strict)|%(subject)"],
     absDir,
   );
   const tags: GitContext["tags"] = [];
+  let totalTagCount = 0;
   if (tagsRaw) {
-    const tagLines = tagsRaw.split("\n").slice(0, 10);
+    const allTagLines = tagsRaw.split("\n").filter((l) => l.trim());
+    totalTagCount = allTagLines.length;
+    const tagLines = allTagLines.slice(0, TAG_LIMIT);
     for (const line of tagLines) {
-      if (!line.trim()) continue;
       const parts = line.split("|");
       if (parts.length >= 1) {
         tags.push({
@@ -349,6 +356,7 @@ export async function gatherGitContext(
       activeContributors,
     },
     tags,
+    totalTagCount,
     branchLimitApplied,
     totalBranchCount,
   };

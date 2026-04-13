@@ -34,7 +34,10 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
   // 1. Summary callout
   const primaryRemote = ctx.remotes.length > 0 ? ctx.remotes[0].url : "(none)";
   const branchNote = ctx.branchLimitApplied
-    ? ` (showing 10 of ${ctx.totalBranchCount})`
+    ? ` (showing ${ctx.branches.length} of ${ctx.totalBranchCount})`
+    : "";
+  const tagNote = ctx.totalTagCount > ctx.tags.length
+    ? ` (showing ${ctx.tags.length} of ${ctx.totalTagCount})`
     : "";
   const summaryText =
     `Remote: ${primaryRemote}\n` +
@@ -42,7 +45,8 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
     `Default branch: ${ctx.defaultBranch}\n` +
     `Total commits: ${ctx.totalCommits}\n` +
     `Repo age: ${formatDate(ctx.repoAge)} \u2192 ${formatDate(ctx.lastCommitDate)}\n` +
-    `Branches: ${ctx.totalBranchCount}${branchNote}`;
+    `Branches: ${ctx.totalBranchCount}${branchNote}\n` +
+    `Tags: ${ctx.totalTagCount}${tagNote}`;
 
   blocks.push({
     type: "callout",
@@ -97,6 +101,9 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
   const branchToggleBlocks: BlockObjectRequest[] = [];
   for (const branch of ctx.branches) {
     const indicator = branch.isCurrentBranch ? " \u2B05" : "";
+    const commitNote = branch.totalCommitCount > branch.commits.length
+      ? ` — showing ${branch.commits.length} of ${branch.totalCommitCount} commits`
+      : "";
     branchToggleBlocks.push({
       type: "heading_3",
       heading_3: {
@@ -104,7 +111,7 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
           {
             type: "text",
             text: {
-              content: `${branch.name} (last commit: ${formatDate(branch.lastCommitDate)})${indicator}`,
+              content: `${branch.name} (last commit: ${formatDate(branch.lastCommitDate)})${indicator}${commitNote}`,
             },
           },
         ],
@@ -117,7 +124,10 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
   // 5. Tags heading (only if tags exist)
   const tagBlocks: BlockObjectRequest[] = [];
   if (ctx.tags.length > 0) {
-    tagBlocks.push(heading2("Tags"));
+    const tagHeader = ctx.totalTagCount > ctx.tags.length
+      ? `Tags (showing ${ctx.tags.length} of ${ctx.totalTagCount})`
+      : "Tags";
+    tagBlocks.push(heading2(tagHeader));
     const tagLines = ctx.tags.map(
       (t) => `${t.name} | ${formatDate(t.date)} | ${t.subject}`,
     );
@@ -162,7 +172,7 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
 
     if (branch.commits.length === 0) continue;
 
-    // First pass: build commit toggle blocks (with body paragraphs as children,
+    // First pass: build commit toggle blocks (with body code blocks as children,
     // but WITHOUT diffstat sub-toggles to stay within Notion's 2-level nesting limit)
     const commitToggleChildren: BlockObjectRequest[] = [];
     for (const commit of branch.commits) {
@@ -171,13 +181,13 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
       // Children inside the commit toggle (level 2 relative to branch H3)
       const innerChildren: BlockObjectRequest[] = [];
       if (commit.body) {
-        innerChildren.push(paragraph(commit.body));
+        innerChildren.push(codeBlock(commit.body));
       }
 
       commitToggleChildren.push({
         type: "toggle",
         toggle: {
-          rich_text: [{ type: "text", text: { content: toggleText } }],
+          rich_text: [{ type: "text", text: { content: toggleText }, annotations: { code: true, bold: false, italic: false, strikethrough: false, underline: false, color: "default" } }],
           color: "default",
           ...(innerChildren.length > 0 ? { children: innerChildren } : {}),
         },
@@ -223,7 +233,7 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
       const diffstatToggle: BlockObjectRequest = {
         type: "toggle",
         toggle: {
-          rich_text: [{ type: "text", text: { content: "Diffstat" } }],
+          rich_text: [{ type: "text", text: { content: "Diffstat:" }, annotations: { italic: true, bold: false, code: false, strikethrough: false, underline: false, color: "default" } }],
           color: "default",
           children: [codeBlock(commit.diffstat!)],
         },

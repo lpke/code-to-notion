@@ -67,6 +67,7 @@ export interface GitContext {
     lastCommitDate: string;
     lastCommitHash: string;
     isCurrentBranch: boolean;
+    totalCommitCount: number;
     commits: Array<{
       hash: string;
       shortHash: string;
@@ -91,6 +92,7 @@ export interface GitContext {
     activeContributors: Array<{ commits: number; name: string }>;
   };
   tags: Array<{ name: string; date: string; subject: string }>;
+  totalTagCount: number;
   branchLimitApplied: boolean;
   totalBranchCount: number;
 }
