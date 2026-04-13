@@ -99,23 +99,30 @@ function buildBranchToggleRichText(branch: GitContext["branches"][0]): Array<Rec
 
 /**
  * Populate a branch toggle with commit children.
- * Commits are rendered in chronological order (oldest first) so new commits
- * can be appended incrementally during updates.
- * Reused by both populateGitContextPage and updateGitContextPage.
+ * Commits are rendered in newest-first order (natural git log order).
+ * A divider "anchor" block is inserted as the first child on fresh uploads;
+ * during incremental updates, new commits are inserted after the existing
+ * anchor so they appear above previously uploaded commits.
+ *
+ * @param afterBlockId - If provided, insert commits after this anchor block
+ *   (incremental update). If omitted, create a new anchor (fresh upload).
+ * @returns The anchor block ID when a new anchor was created (fresh upload),
+ *   or undefined when afterBlockId was provided (incremental update).
  */
 async function populateBranchCommits(
   toggleBlockId: string,
   branch: GitContext["branches"][0],
-): Promise<void> {
-  if (branch.commits.length === 0) return;
+  afterBlockId?: string,
+): Promise<string | undefined> {
+  if (branch.commits.length === 0) return undefined;
 
   const dedupedCommits = branch.commits.filter((c) => c.deduplicated);
   if (dedupedCommits.length > 0) {
     logger.debug(`      ${dedupedCommits.length} commit(s) de-duplicated (shown as one-liners)`);
   }
 
-  // Reverse to chronological order (oldest first) for append-friendly updates
-  const orderedCommits = [...branch.commits].reverse();
+  // Keep newest-first order from git (no reversal)
+  const orderedCommits = branch.commits;
 
   // Build children: full commits as toggles, deduplicated as plain text paragraphs
   const commitChildren: BlockObjectRequest[] = [];
@@ -153,20 +160,44 @@ async function populateBranchCommits(
     }
   }
 
-  // Append commit children in batches of 100 (Notion limit)
+  // --- Fresh upload path: create anchor (divider) as first child ---
+  let createdAnchorId: string | undefined;
+  if (!afterBlockId) {
+    const anchorResponse = await rateLimiter.schedule(() =>
+      notionClient.blocks.children.append({
+        block_id: toggleBlockId,
+        children: [{ type: "divider", divider: {} } as BlockObjectRequest],
+      }),
+    );
+    createdAnchorId = anchorResponse.results[0].id;
+  }
+
+  // --- Append commits using `after` for positional insertion ---
+  // Fresh uploads: insert after the newly created anchor
+  // Incremental updates: insert after the provided afterBlockId
+  let currentAfterId = afterBlockId || createdAnchorId;
+
   const commitBatches = Math.ceil(commitChildren.length / 100);
   for (let j = 0; j < commitChildren.length; j += 100) {
     const batch = commitChildren.slice(j, j + 100);
     if (commitBatches > 1) {
       logger.debug(`      Sending commit batch ${Math.floor(j / 100) + 1}/${commitBatches} (${batch.length} commits)...`);
     }
-    await rateLimiter.schedule(() =>
+    const response = await rateLimiter.schedule(() =>
       notionClient.blocks.children.append({
         block_id: toggleBlockId,
         children: batch,
+        ...(currentAfterId ? { after: currentAfterId } : {}),
       }),
     );
+    // Chain: next batch goes after the last block of this batch
+    const results = response.results;
+    if (results.length > 0) {
+      currentAfterId = (results[results.length - 1] as { id: string }).id;
+    }
   }
+
+  return createdAnchorId;
 }
 
 /**
@@ -370,17 +401,19 @@ export async function populateGitContextPage(
   for (let i = 0; i < ctx.branches.length && i < toggleBlocks.length; i++) {
     const branch = ctx.branches[i];
     const toggleBlockId = toggleBlocks[i].id;
+    let anchorId: string | undefined;
 
     if (branch.commits.length === 0) {
       logger.debug(`    [${i + 1}/${ctx.branches.length}] ${branch.name}: no commits, skipping`);
     } else {
       logger.debug(`    [${i + 1}/${ctx.branches.length}] ${branch.name}: ${branch.commits.length} commit(s)...`);
-      await populateBranchCommits(toggleBlockId, branch);
+      anchorId = await populateBranchCommits(toggleBlockId, branch);
     }
 
     blockMap.branches[branch.name] = {
       toggleId: toggleBlockId,
       lastCommitHash: branch.lastCommitHash,
+      anchorBlockId: anchorId || "",
     };
   }
 
@@ -580,7 +613,7 @@ export async function updateGitContextPage(
       });
       newBlockMap.branches[branchName] = entry;
     } else {
-      // Changed \u2014 incremental append
+      // Changed — incremental append
       logger.debug(`  Updating branch ${branchName} (changed)...`);
 
       // Update heading to new format (h2 with date mention)
@@ -592,6 +625,22 @@ export async function updateGitContextPage(
         },
       });
 
+      // Migration: old manifests lack anchorBlockId — do a full rewrite to establish one
+      if (!entry.anchorBlockId) {
+        logger.debug(`    No anchor block for ${branchName} (old manifest), full rewrite`);
+        const toggleChildren = await listAllChildren(entry.toggleId);
+        for (const child of toggleChildren) {
+          await deleteBlock(child.id);
+        }
+        const newAnchorId = await populateBranchCommits(entry.toggleId, branch);
+        newBlockMap.branches[branchName] = {
+          toggleId: entry.toggleId,
+          lastCommitHash: branch.lastCommitHash,
+          anchorBlockId: newAnchorId || "",
+        };
+        continue;
+      }
+
       // Find where the new commits start
       const lastKnownHash = entry.lastCommitHash;
       const newCommitIndex = branch.commits.findIndex(
@@ -599,16 +648,18 @@ export async function updateGitContextPage(
       );
 
       if (newCommitIndex === -1) {
-        // lastCommitHash not found \u2014 force push or rebase, fall back to full rewrite
+        // lastCommitHash not found — force push or rebase, fall back to full rewrite
         logger.debug(`    Force push/rebase detected for ${branchName} (hash ${lastKnownHash} not found), full rewrite`);
         const toggleChildren = await listAllChildren(entry.toggleId);
         for (const child of toggleChildren) {
           await deleteBlock(child.id);
         }
-        await populateBranchCommits(entry.toggleId, branch);
+        // No afterBlockId — fresh populate creates a new anchor
+        const newAnchorId = await populateBranchCommits(entry.toggleId, branch);
         newBlockMap.branches[branchName] = {
           toggleId: entry.toggleId,
           lastCommitHash: branch.lastCommitHash,
+          anchorBlockId: newAnchorId || "",
         };
       } else {
         // Commits before newCommitIndex are new (git log is newest-first)
@@ -618,14 +669,15 @@ export async function updateGitContextPage(
           // No new commits despite hash mismatch (shouldn't happen)
           newBlockMap.branches[branchName] = entry;
         } else {
-          // Append only new commits at the END (chronological order)
-          const newCommitsChronological = [...newCommits].reverse();
-          const tempBranch = { ...branch, commits: newCommitsChronological };
-          await populateBranchCommits(entry.toggleId, tempBranch);
+          // newCommits are already newest-first from the git log slice.
+          // Pass entry.anchorBlockId so they're inserted after the anchor (before existing commits).
+          const tempBranch = { ...branch, commits: newCommits };
+          await populateBranchCommits(entry.toggleId, tempBranch, entry.anchorBlockId);
 
           newBlockMap.branches[branchName] = {
             toggleId: entry.toggleId,
             lastCommitHash: branch.lastCommitHash,
+            anchorBlockId: entry.anchorBlockId,
           };
         }
       }
@@ -654,10 +706,11 @@ export async function updateGitContextPage(
       }),
     );
     const newToggleId = response.results[0].id;
-    await populateBranchCommits(newToggleId, branch);
+    const newAnchorId = await populateBranchCommits(newToggleId, branch);
     newBlockMap.branches[branch.name] = {
       toggleId: newToggleId,
       lastCommitHash: branch.lastCommitHash,
+      anchorBlockId: newAnchorId || "",
     };
   }
 

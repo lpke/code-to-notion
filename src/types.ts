@@ -134,6 +134,7 @@ export interface GitContextBlockMap {
   branches: Record<string, {
     toggleId: string;
     lastCommitHash: string;
+    anchorBlockId: string;
   }>;
   tagsHeadingId?: string;
   tagsCodeId?: string;
