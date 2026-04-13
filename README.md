@@ -1,107 +1,69 @@
 # code-to-pages
 
-A CLI tool that uploads your codebase to Notion as a hierarchy of pages — one page per file, with syntax-highlighted code blocks.
-
-## Why
-
-This tool was primarily built to give [Notion AI](https://www.notion.so/product/ai) your code's context. By uploading your code as Notion pages, you can ask Notion AI questions about your project — and potentially save IDE Agent tokens in the process.
+A CLI tool that takes a directory and uploads it to Notion — preserving folder structure, syntax-highlighting files, and generating a git context page with branch history, diffstats, and recent activity. Useful for giving [Notion AI](https://www.notion.so/product/ai) full visibility into your project.
 
 ## Features
 
 - Preserves directory structure as nested Notion pages
+- **Git context page** — automatically creates a dedicated page with branch history, per-commit diffstats, recent activity, hot files, contributor stats, and tags. Allows Notion to see not just your code, but how it's evolving.
 - Syntax highlighting for 40+ languages
-- Respects `.gitignore` + sensible defaults (lock files, binaries, build output, etc.)
-- Handles large files via chunking across Notion's API limits
-- Built-in rate limiting with automatic retry on 429s
-- Dry run mode, scoped uploads (`--only`), and verbose output
-- Gathers git context (branches, commits, diffs, tags) into a dedicated page
+- Respects `.gitignore` + sensible defaults
+- Handles large files via chunking, with built-in rate limiting and retry
+- Dry run, scoped uploads (`--only`), and verbose output
 
 ## Setup
 
-**Prerequisites:** Node.js >= 18
-
-### 1. Clone & install
+**Requires Node.js >= 18**
 
 ```sh
 git clone https://github.com/lpke/code-to-pages.git
 cd code-to-pages
-npm install
-npm run build
-```
-
-### 2. Create a Notion integration
-
-1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations) and click **New integration**.
-2. Give it a name, ensure it has **Read & Insert content** permission, and submit.
-3. Copy the **Internal Integration Secret** — this is your `NOTION_API_TOKEN`.
-
-### 3. Get your parent page ID
-
-Create (or choose) a Notion page where codebases will be uploaded as child pages. Open it in a browser — the page ID is the 32-character hex string at the end of the URL (ignoring any query params). This is your `NOTION_CODEBASES_PAGE_ID`.
-
-> **Important:** Click **⋯ → Connections → Connect to** on that page and add your integration, otherwise the API can't write to it.
-
-### 4. Configure `.env`
-
-```sh
+npm install && npm run build
 cp .env.example .env
 ```
 
-Fill in both values:
+Fill in `.env` with:
 
-```
-NOTION_API_TOKEN=secret_abc123...
-NOTION_CODEBASES_PAGE_ID=a1b2c3d4...
-```
+1. **`NOTION_API_TOKEN`** — Create an integration at [notion.so/my-integrations](https://www.notion.so/my-integrations) with **Read & Insert content** permission. Copy the secret.
+2. **`NOTION_CODEBASES_PAGE_ID`** — The 32-char hex ID from the URL of the Notion page you want to upload under. Make sure to connect your integration to this page via **⋯ → Connections**.
 
 ## Usage
 
-From the `code-to-pages` directory:
-
 ```sh
-node dist/index.js <dir> [options]
-```
-
-To use it as a command from anywhere, you can either run `npm link` or add a shell alias:
-
-```sh
-# Option A: npm link (creates a global symlink)
-npm link
 code-to-pages <dir> [options]
-
-# Option B: shell alias (add to ~/.bashrc or ~/.zshrc)
-alias code-to-pages="node /absolute/path/to/code-to-pages/dist/index.js"
 ```
 
-For development (runs TypeScript directly):
-
-```sh
-npm run dev -- <dir> [options]
-```
-
-### Options
+> The above assumes you've run `npm link` from the repo, or added a shell alias:
+> ```sh
+> alias code-to-pages="node /path/to/code-to-pages/dist/index.js"
+> ```
 
 | Option | Description |
 | --- | --- |
 | `--name <name>` | Override project name (default: directory basename) |
-| `--only <dirs...>` | Only include these subdirectories (root files always included) |
+| `--only <dirs...>` | Only include these subdirectories |
 | `--ignore <patterns...>` | Additional glob patterns to ignore |
 | `--skip-git-context` | Skip git context gathering |
 | `--dry-run` | Preview file tree without API calls |
 | `--concurrency <n>` | Max concurrent API requests (default: 2, max: 3) |
 | `--verbose` | Detailed per-file progress |
 
-### Examples
-
 ```sh
 code-to-pages ./my-project --dry-run
 code-to-pages ./my-project --name "My Project" --only src config
-code-to-pages ./my-project --ignore "**/*.test.ts" --verbose --concurrency 3
+code-to-pages ./my-project --ignore "**/*.test.ts" --verbose
 ```
 
 ## Git Context
 
-When the target is a git repo, a "🔀 Git Context" page is created with repo info, recent activity, per-branch commit details with diffstats, and tags. Repos with >20 branches are limited to the 20 most recently touched (default branch always included). Use `--skip-git-context` to disable.
+For git repos, a **🔀 Git Context** page is created alongside your code containing:
+
+- **Repo info** — remotes, default/current branch, total commits, repo age
+- **Branch history** — per-branch commits with full messages and diffstats (50 for default branch, 20 for others). Commits shared across branches are de-duplicated. Repos with 20+ branches are trimmed to the most recently active.
+- **Recent activity** — last 7 days of commits, hot files, active contributors
+- **Tags** — 10 most recent with dates and annotations
+
+Disable with `--skip-git-context`.
 
 ## License
 
