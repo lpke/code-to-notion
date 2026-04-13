@@ -51,6 +51,7 @@ export async function gatherGitContext(
   }
 
   // --- 1. Repository Info ---
+  logger.debug("  Gathering repository info...");
   const remotes = parseRemotes(git(["remote", "-v"], absDir));
   const currentBranch = git(["branch", "--show-current"], absDir) || "HEAD";
   const defaultBranch = detectDefaultBranch(absDir);
@@ -59,8 +60,10 @@ export async function gatherGitContext(
   const repoAge =
     git(["log", "--reverse", "--format=%aI"], absDir)?.split("\n")[0] || "unknown";
   const lastCommitDate = git(["log", "-1", "--format=%aI"], absDir) || "unknown";
+  logger.debug(`  Repository: ${currentBranch} branch, ${totalCommits} total commits`);
 
   // --- 2. Branch Management ---
+  logger.debug("  Enumerating branches...");
   const localBranchesRaw = git(
     ["branch", "--format=%(refname:short)|%(committerdate:iso-strict)|%(objectname:short)"],
     absDir,
@@ -139,9 +142,12 @@ export async function gatherGitContext(
   }
 
   // --- 3. Commit History Per Branch ---
+  logger.debug(`  Gathering commit history for ${sortedBranches.length} branch(es)...`);
   const branches: GitContext["branches"] = [];
 
-  for (const branch of sortedBranches) {
+  for (let branchIdx = 0; branchIdx < sortedBranches.length; branchIdx++) {
+    const branch = sortedBranches[branchIdx];
+    logger.debug(`    [${branchIdx + 1}/${sortedBranches.length}] ${branch.name}: fetching commits...`);
     const isCurrentBranch = branch.name === currentBranch;
     const commitLimit = 50;
 
@@ -208,6 +214,7 @@ export async function gatherGitContext(
       }
     }
 
+    logger.debug(`    [${branchIdx + 1}/${sortedBranches.length}] ${branch.name}: ${commits.length} commit(s), fetching diffstats...`);
     // Get per-commit diffstats for up to the last 50 commits on this branch
     if (commits.length > 0) {
       const diffstatRaw = git(
@@ -242,6 +249,7 @@ export async function gatherGitContext(
   }
 
   // --- 4. Recent Changes (Last 7 Days) ---
+  logger.debug("  Gathering recent activity...");
   const recentCommitsRaw = git(
     ["log", "--all", "--after=7 days ago", "--format=%h|%aI|%an|%s|%D", "--date=iso-strict"],
     absDir,
@@ -320,6 +328,7 @@ export async function gatherGitContext(
   }
 
   // --- 5. Tags ---
+  logger.debug("  Gathering tags...");
   const TAG_LIMIT = 10;
   const tagsRaw = git(
     ["tag", "--sort=-creatordate", "--format=%(refname:short)|%(creatordate:iso-strict)|%(subject)"],

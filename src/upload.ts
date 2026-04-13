@@ -51,23 +51,31 @@ export async function upload(
   const fileCount = counts.files;
 
   // Estimate API calls: 1 per page + 1 for metadata callout + ~1 for code blocks per file + 1 for root callout
-  let estimatedApiCalls =
+  const estimatedFileApiCalls =
     1 + // root page
     1 + // root callout
     dirCount + // directory pages
     fileCount * 3; // file page + metadata + code block(s)
 
   // Account for git context page if enabled
-  if (options.git) {
+  let estimatedGitApiCalls = 0;
+  const includeGit = !options.skipGitContext;
+  if (includeGit) {
     const branchEstimate = Math.min(dirCount > 0 ? 5 : 2, 10);
-    estimatedApiCalls += branchEstimate * 2 + 8;
+    estimatedGitApiCalls = branchEstimate * 2 + 8;
   }
+
+  const estimatedApiCalls = estimatedFileApiCalls + estimatedGitApiCalls;
 
   // Step 2: Print summary
   logger.info(`\n\uD83D\uDCCA Summary:`);
   logger.info(`   Directories: ${dirCount}`);
   logger.info(`   Files:       ${fileCount}`);
-  logger.info(`   Est. API calls: ~${estimatedApiCalls}`);
+  if (includeGit) {
+    logger.info(`   Est. API calls: ~${estimatedApiCalls} (~${estimatedFileApiCalls} files + ~${estimatedGitApiCalls} git context)`);
+  } else {
+    logger.info(`   Est. API calls: ~${estimatedApiCalls}`);
+  }
 
   if (fileCount === 0) {
     logger.warn("\nNo files found after filtering. Nothing to upload.");
@@ -113,7 +121,7 @@ export async function upload(
 
     // Step 4b: Gather git context (before root callout so we can include branch info)
     let gitContext: Awaited<ReturnType<typeof gatherGitContext>> = null;
-    if (options.git) {
+    if (includeGit) {
       try {
         logger.startSpinner("\uD83D\uDCDD Gathering git context...");
         gitContext = await gatherGitContext(absDir);

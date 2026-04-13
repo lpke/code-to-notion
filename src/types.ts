@@ -17,7 +17,7 @@ export interface UploadOptions {
   dryRun: boolean;
   concurrency: number;
   verbose: boolean;
-  git: boolean;
+  skipGitContext: boolean;
 }
 
 /** A node in the file tree */

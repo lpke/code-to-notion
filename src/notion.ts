@@ -3,6 +3,7 @@ import type { BlockObjectRequest } from "@notionhq/client/build/src/api-endpoint
 import type { LanguageRequest } from "@notionhq/client/build/src/api-endpoints/common.js";
 import { RateLimiter } from "./rate-limiter.js";
 import type { GitContext } from "./types.js";
+import * as logger from "./logger.js";
 
 let notionClient: Client;
 let rateLimiter: RateLimiter;
@@ -26,7 +27,9 @@ export async function appendGitContextPage(
   ctx: GitContext,
 ): Promise<void> {
   // Create the child page
+  logger.debug("  Creating git context page...");
 const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
+  logger.debug("  Git context page created");
 
   // --- Build all top-level blocks ---
   const blocks: BlockObjectRequest[] = [];
@@ -137,9 +140,15 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
   // --- Append all top-level blocks in batches ---
   // Combine: blocks + branchToggleBlocks + tagBlocks
   const allTopLevel = [...blocks, ...branchToggleBlocks, ...tagBlocks];
+  logger.debug(`  Appending ${allTopLevel.length} top-level blocks (${Math.ceil(allTopLevel.length / 100)} batch(es))...`);
 
   for (let i = 0; i < allTopLevel.length; i += 100) {
     const batch = allTopLevel.slice(i, i + 100);
+    const batchNum = Math.floor(i / 100) + 1;
+    const totalBatches = Math.ceil(allTopLevel.length / 100);
+    if (totalBatches > 1) {
+      logger.debug(`    Sending top-level block batch ${batchNum}/${totalBatches} (${batch.length} blocks)...`);
+    }
     await rateLimiter.schedule(() =>
       notionClient.blocks.children.append({
         block_id: pageId,
@@ -151,6 +160,7 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
   // --- Append toggle content for each branch ---
   // We need to find the IDs of the toggle heading blocks we just created.
   // Fetch children of the page to get their IDs.
+  logger.debug("  Fetching page children to resolve branch toggle IDs...");
   const pageChildren = await rateLimiter.schedule(() =>
     notionClient.blocks.children.list({
       block_id: pageId,
@@ -165,12 +175,17 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
     return h3?.is_toggleable === true;
   });
 
+  logger.debug(`  Uploading commit history for ${ctx.branches.length} branch(es)...`);
   // For each branch, create per-commit toggle blocks inside the branch H3
   for (let i = 0; i < ctx.branches.length && i < toggleBlocks.length; i++) {
     const branch = ctx.branches[i];
     const toggleBlockId = toggleBlocks[i].id;
 
-    if (branch.commits.length === 0) continue;
+    if (branch.commits.length === 0) {
+      logger.debug(`    [${i + 1}/${ctx.branches.length}] ${branch.name}: no commits, skipping`);
+      continue;
+    }
+    logger.debug(`    [${i + 1}/${ctx.branches.length}] ${branch.name}: ${branch.commits.length} commit(s)...`);
 
     // First pass: build commit toggle blocks (with body code blocks as children,
     // but WITHOUT diffstat sub-toggles to stay within Notion's 2-level nesting limit)
@@ -195,8 +210,12 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
     }
 
     // Append commit toggles in batches of 100 (Notion limit)
+    const commitBatches = Math.ceil(commitToggleChildren.length / 100);
     for (let j = 0; j < commitToggleChildren.length; j += 100) {
       const batch = commitToggleChildren.slice(j, j + 100);
+      if (commitBatches > 1) {
+        logger.debug(`      Sending commit batch ${Math.floor(j / 100) + 1}/${commitBatches} (${batch.length} commits)...`);
+      }
       await rateLimiter.schedule(() =>
         notionClient.blocks.children.append({
           block_id: toggleBlockId,
@@ -211,8 +230,12 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
       .map((commit, idx) => ({ commit, idx }))
       .filter(({ commit }) => !!commit.diffstat);
 
-    if (commitsWithDiffstat.length === 0) continue;
+    if (commitsWithDiffstat.length === 0) {
+      logger.debug(`      No diffstats for ${branch.name}`);
+      continue;
+    }
 
+    logger.debug(`      Appending diffstats for ${commitsWithDiffstat.length} commit(s) on ${branch.name}...`);
     // Fetch all children of the branch toggle to get commit toggle IDs
     const branchChildren = await rateLimiter.schedule(() =>
       notionClient.blocks.children.list({
