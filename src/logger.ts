@@ -244,9 +244,6 @@ function printTreeChild(node: FileNode, linePrefix: string, childrenPrefix: stri
   }
 }
 
-
-
-
 export function logDiffSummary(diff: ManifestDiff): void {
   console.log("");
   console.log(chalk.cyan("📊 Changes detected:"));
@@ -301,22 +298,22 @@ export function printUpdateSummary(opts: {
   }
 
   if (opts.diff.added.length > 0) {
-    console.log(`  ${chalk.green("Added:")}         ${opts.diff.added.length} file(s)`);
+    console.log(`  ${chalk.green("Files added:")}     ${opts.diff.added.length}`);
   }
   if (opts.diff.modified.length > 0) {
-    console.log(`  ${chalk.yellow("Modified:")}      ${opts.diff.modified.length} file(s)`);
+    console.log(`  ${chalk.yellow("Files modified:")}  ${opts.diff.modified.length}`);
   }
   if (opts.diff.deleted.length > 0) {
-    console.log(`  ${chalk.red("Deleted:")}       ${opts.diff.deleted.length} file(s)`);
+    console.log(`  ${chalk.red("Files deleted:")}   ${opts.diff.deleted.length}`);
   }
   if (opts.diff.unchanged.length > 0) {
-    console.log(`  ${chalk.dim("Unchanged:")}     ${opts.diff.unchanged.length} file(s)`);
+    console.log(`  ${chalk.dim("Files unchanged:")} ${opts.diff.unchanged.length}`);
   }
   if (opts.diff.addedDirs.length > 0) {
-    console.log(`  ${chalk.green("New dirs:")}      ${opts.diff.addedDirs.length}`);
+    console.log(`  ${chalk.green("Dirs added:")}      ${opts.diff.addedDirs.length}`);
   }
   if (opts.diff.deletedDirs.length > 0) {
-    console.log(`  ${chalk.red("Removed dirs:")}  ${opts.diff.deletedDirs.length}`);
+    console.log(`  ${chalk.red("Dirs deleted:")}    ${opts.diff.deletedDirs.length}`);
   }
 
   console.log(`  ${chalk.cyan("Pages created:")} ${opts.pagesCreated}`);

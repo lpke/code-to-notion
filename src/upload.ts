@@ -108,12 +108,16 @@ export async function upload(
   initNotion(config.notionApiToken, options.concurrency);
 
   // Step 5: Detect existing project
+  // NOTE: findChildPageByTitle returns the first match. If multiple pages share
+  // the same name, only the first is detected. Use --name to disambiguate.
+  logger.info("\n\uD83D\uDD0E Checking for existing upload...");
   const existingPageId = await findChildPageByTitle(
     config.notionCodebasesPageId,
     projectName,
   );
 
   if (!existingPageId) {
+    logger.info("No existing upload found. Starting fresh upload.");
     // No existing project — fresh upload
     if (options.dryRun) {
       // --dry-run with --update/--replace but nothing exists
@@ -127,6 +131,7 @@ export async function upload(
   }
 
   // Step 6: Existing project found — determine action
+  logger.info(`Found existing '${projectName}' page`);
   let action: 'update' | 'replace' | 'new' | 'cancel';
   if (options.update) {
     action = 'update';
@@ -269,6 +274,7 @@ async function freshUpload(
 
     // Write manifest
     try {
+      logger.debug("Writing manifest...");
       const manifest = buildManifest(
         rootPageId,
         manifestBuilder.files,
@@ -339,11 +345,13 @@ async function updateExisting(
   }
 
   const { manifest, manifestPageId } = manifestResult;
+  logger.debug(`Manifest loaded: ${Object.keys(manifest.files).length} file(s), ${Object.keys(manifest.directories).length} directory(ies)`);
 
   // 2. Compute local hashes
   logger.updateSpinner("Computing file hashes...");
   const localFiles = buildLocalFileMap(tree, absDir);
   const localDirs = collectDirPaths(tree);
+  logger.debug(`Computing file hashes for ${localFiles.size} file(s)...`);
 
   // 3. Gather git context (local-only, no API calls)
   let gitContext: Awaited<ReturnType<typeof gatherGitContext>> = null;
@@ -360,6 +368,13 @@ async function updateExisting(
   const diff = diffManifest(localFiles, localDirs, manifest);
   logger.succeedSpinner("Diff computed");
   logger.logDiffSummary(diff);
+
+  // Verbose: list each changed file
+  for (const f of diff.added) logger.debug(`  + ${f}`);
+  for (const f of diff.modified) logger.debug(`  ~ ${f}`);
+  for (const f of diff.deleted) logger.debug(`  - ${f}`);
+  for (const d of diff.addedDirs) logger.debug(`  + ${d}/`);
+  for (const d of diff.deletedDirs) logger.debug(`  - ${d}/`);
 
   // 5. Early exit if nothing changed
   if (
@@ -385,6 +400,11 @@ async function updateExisting(
     // Phase 1: Deletions
     // ---------------------------------------------------------------
 
+    const totalDeletions = diff.modified.length + diff.deleted.length + diff.deletedDirs.length;
+    if (totalDeletions > 0) {
+      logger.debug(`Phase 1: Deleting ${diff.modified.length + diff.deleted.length} file(s) and ${diff.deletedDirs.length} directory(ies)...`);
+    }
+
     // Delete modified file pages (will be recreated in Phase 3)
     for (const filePath of diff.modified) {
       logger.throwIfCancelled();
@@ -394,6 +414,7 @@ async function updateExisting(
           logger.debug(`Deleting modified: ${filePath}`);
           await deleteBlock(entry.pageId);
           pagesDeleted++;
+          logger.debug(`  Deleted: ${filePath}`);
         } catch {
           logger.warn(`Could not delete page for modified file: ${filePath} (may have been manually removed)`);
         }
@@ -409,6 +430,7 @@ async function updateExisting(
           logger.debug(`Deleting removed: ${filePath}`);
           await deleteBlock(entry.pageId);
           pagesDeleted++;
+          logger.debug(`  Deleted: ${filePath}`);
         } catch {
           logger.warn(`Could not delete page for removed file: ${filePath} (may have been manually removed)`);
         }
@@ -424,6 +446,7 @@ async function updateExisting(
           logger.debug(`Deleting removed dir: ${dirPath}`);
           await deleteBlock(entry.pageId);
           pagesDeleted++;
+          logger.debug(`  Deleted: ${dirPath}/`);
         } catch {
           logger.warn(`Could not delete page for removed dir: ${dirPath} (may have been manually removed)`);
         }
@@ -444,6 +467,9 @@ async function updateExisting(
     }
 
     // Create new directories (sorted top-down by diffManifest)
+    if (diff.addedDirs.length > 0) {
+      logger.debug(`Phase 2: Creating ${diff.addedDirs.length} new directory(ies)...`);
+    }
     for (const dirPath of diff.addedDirs) {
       logger.throwIfCancelled();
       const parentDir = path.dirname(dirPath);
@@ -462,6 +488,7 @@ async function updateExisting(
         const pageId = await createDirectoryPage(parentPageId, path.basename(dirPath));
         dirPageIds[dirPath] = { pageId };
         pagesCreated++;
+        logger.debug(`  Created dir: ${dirPath}`);
       } catch (err: unknown) {
         if (err instanceof logger.CancelledError) throw err;
         const error = err instanceof Error ? err : new Error(String(err));
@@ -495,6 +522,9 @@ async function updateExisting(
       } else if (dirPageIds[parentDir]) {
         parentPageId = dirPageIds[parentDir].pageId;
       } else {
+        // TODO: If the parent dir existed in the manifest but its Notion page was
+        // manually deleted, we could attempt to recreate it. For now, we error and
+        // the user can --replace to fix.
         const error = new Error(`Parent directory ${parentDir} not found`);
         logger.error(`Cannot create file ${filePath}: ${error.message}`);
         errors.push({ filePath, error });
@@ -542,7 +572,7 @@ async function updateExisting(
 
     if (includeGit && gitContext) {
       try {
-        logger.updateSpinner("Updating git context...");
+        logger.updateSpinner("Updating git context page...");
         if (manifest.gitContextPageId) {
           try {
             await deleteBlock(manifest.gitContextPageId);
@@ -562,6 +592,7 @@ async function updateExisting(
 
     // Update root callout
     try {
+      logger.debug("Updating root callout...");
       const rootChildren = await listAllChildren(existingRootPageId);
       const calloutBlock = rootChildren.find((b) => b.type === "callout");
       if (calloutBlock) {
@@ -586,6 +617,7 @@ async function updateExisting(
     // ---------------------------------------------------------------
 
     try {
+      logger.debug("Writing updated manifest...");
       const updatedManifest = buildManifest(
         existingRootPageId,
         newFileEntries,

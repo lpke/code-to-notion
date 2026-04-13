@@ -5,6 +5,7 @@ A CLI tool that takes a directory and uploads it to Notion — preserving folder
 ## Features
 
 - Preserves directory structure as nested Notion pages
+- **Incremental updates** — detects existing uploads and only re-uploads changed files using content-hash diffing
 - **Git context page** — automatically creates a dedicated page with branch history, per-commit diffstats, recent activity, hot files, contributor stats, and tags. Allows Notion to see not just your code, but how it's evolving.
 - Syntax highlighting for 40+ languages
 - Respects `.gitignore` + sensible defaults
@@ -43,6 +44,8 @@ code-to-notion <dir> [options]
 | `--name <name>` | Override project name (default: directory basename) |
 | `--only <dirs...>` | Only include these subdirectories |
 | `--ignore <patterns...>` | Additional glob patterns to ignore |
+| `--update` | Update existing upload if found (only upload changes) |
+| `--replace` | Replace existing upload if found (delete and re-upload) |
 | `--skip-git-context` | Skip git context gathering |
 | `--dry-run` | Preview file tree without API calls |
 | `--concurrency <n>` | Max concurrent API requests (default: 2, max: 3) |
@@ -52,6 +55,28 @@ code-to-notion <dir> [options]
 code-to-notion ./my-project --dry-run
 code-to-notion ./my-project --name "My Project" --only src config
 code-to-notion ./my-project --ignore "**/*.test.ts" --verbose
+code-to-notion ./my-project --update
+code-to-notion ./my-project --replace
+code-to-notion ./my-project --update --dry-run
+```
+
+## Updating Existing Uploads
+
+On each upload, a `.manifest` page is created under the project root that tracks every file's relative path, Notion page ID, and SHA-256 content hash. This is maintained automatically — no manual intervention is needed.
+
+On subsequent runs, if a page with the same project name already exists, the CLI will prompt you to choose:
+
+1. **Update existing** — reads the manifest, computes local file hashes, and only uploads files that were added or modified. Deleted files are removed from Notion. Unchanged files are skipped entirely.
+2. **Replace existing** — deletes the existing page and does a full fresh upload.
+3. **Create new** — uploads alongside the existing page (original behaviour).
+4. **Cancel** — exits without making changes.
+
+Use `--update` or `--replace` to skip the prompt, which is useful for scripts and CI pipelines.
+
+Combine `--update` with `--dry-run` to preview what would change without uploading:
+
+```sh
+code-to-notion ./my-project --update --dry-run
 ```
 
 ## Git Context
@@ -68,4 +93,3 @@ Disable with `--skip-git-context`.
 ## License
 
 GPL v3
-
