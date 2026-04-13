@@ -72,7 +72,7 @@ export async function gatherGitContext(
 
   const branchMap = new Map<
     string,
-    { name: string; lastCommitDate: string; lastCommitHash: string }
+    { name: string; gitRef: string; lastCommitDate: string; lastCommitHash: string }
   >();
 
   // Parse local branches
@@ -83,6 +83,7 @@ export async function gatherGitContext(
       if (name) {
         branchMap.set(name, {
           name,
+          gitRef: name,
           lastCommitDate: date || "unknown",
           lastCommitHash: hash || "unknown",
         });
@@ -104,6 +105,7 @@ export async function gatherGitContext(
       if (!branchMap.has(shortName)) {
         branchMap.set(shortName, {
           name: shortName,
+          gitRef: rawName,
           lastCommitDate: date || "unknown",
           lastCommitHash: hash || "unknown",
         });
@@ -144,11 +146,11 @@ export async function gatherGitContext(
     const commitLimit = 50;
 
     // Get total commit count for this branch (to detect truncation)
-    const totalBranchCommitsStr = git(["rev-list", "--count", branch.name], absDir);
+    const totalBranchCommitsStr = git(["rev-list", "--count", branch.gitRef], absDir);
     const totalBranchCommits = totalBranchCommitsStr ? parseInt(totalBranchCommitsStr, 10) : 0;
 
     const commitLogRaw = git(
-      ["log", branch.name, "--format=%H|%h|%aI|%an|%ae|%s", "-n", String(commitLimit)],
+      ["log", branch.gitRef, "--format=%H|%h|%aI|%an|%ae|%s", "-n", String(commitLimit)],
       absDir,
     );
 
@@ -174,7 +176,7 @@ export async function gatherGitContext(
     // Get full commit messages for this branch
     if (commits.length > 0) {
       const fullMessagesRaw = git(
-        ["log", branch.name, "--format=---COMMIT_START---%H%n%B---COMMIT_END---", "-n", String(commitLimit)],
+        ["log", branch.gitRef, "--format=---COMMIT_START---%H%n%B---COMMIT_END---", "-n", String(commitLimit)],
         absDir,
       );
 
@@ -209,7 +211,7 @@ export async function gatherGitContext(
     // Get per-commit diffstats for up to the last 50 commits on this branch
     if (commits.length > 0) {
       const diffstatRaw = git(
-        ["log", branch.name, "--format=---DIFFSTAT_START---%h", "--stat", "-n", String(commitLimit)],
+        ["log", branch.gitRef, "--format=---DIFFSTAT_START---%h", "--stat", "-n", String(commitLimit)],
         absDir,
       );
 
