@@ -84,16 +84,16 @@ export interface GitContext {
     }>;
   }>;
   recentActivity: {
-    commitsLast7Days: Array<{
+    commitsLast14Days: Array<{
       shortHash: string;
       date: string;
       author: string;
       subject: string;
       branches: string;
     }>;
-    diffstatLast20: string;
     hotFiles: Array<{ count: number; file: string }>;
     activeContributors: Array<{ commits: number; name: string }>;
+    oldestActivityDate?: string;
   };
   tags: Array<{ name: string; date: string; subject: string }>;
   totalTagCount: number;
@@ -101,10 +101,8 @@ export interface GitContext {
   totalBranchCount: number;
   /** Computed date boundaries for time-period headings */
   dateBoundaries: {
-    recentActivityStart: string; // ISO date, 7 days before gather time
+    recentActivityStart: string; // ISO date, 14 days before gather time
     recentActivityEnd: string;   // ISO date, gather time
-    contributorStart: string;    // ISO date, 30 days before gather time
-    contributorEnd: string;      // ISO date, gather time
   };
 }
 
@@ -127,12 +125,11 @@ export interface GitContextBlockMap {
   calloutId: string;
   recentActivityHeadingId: string;
   recentActivityCodeId: string;
+  recentCommitsHeadingId?: string;
   hotFilesHeadingId?: string;
   hotFilesCodeId?: string;
   contributorsHeadingId?: string;
   contributorsCodeId?: string;
-  diffstatHeadingId?: string;
-  diffstatCodeId?: string;
   branchesHeadingId: string;
   branches: Record<string, {
     toggleId: string;

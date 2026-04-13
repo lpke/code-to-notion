@@ -276,19 +276,19 @@ export async function gatherGitContext(
     logger.debug(`  De-duplicated ${totalDeduped} commit(s) across branches`);
   }
 
-  // --- 4. Recent Changes (Last 7 Days) ---
+  // --- 4. Recent Changes (Last 14 Days) ---
   logger.debug("  Gathering recent activity...");
   const recentCommitsRaw = git(
-    ["log", "--all", "--after=7 days ago", "--format=%h|%aI|%an|%s|%D", "--date=iso-strict"],
+    ["log", "--all", "--after=14 days ago", "--format=%h|%aI|%an|%s|%D", "--date=iso-strict"],
     absDir,
   );
-  const commitsLast7Days: GitContext["recentActivity"]["commitsLast7Days"] = [];
+  const commitsLast14Days: GitContext["recentActivity"]["commitsLast14Days"] = [];
   if (recentCommitsRaw) {
     for (const line of recentCommitsRaw.split("\n")) {
       if (!line.trim()) continue;
       const parts = line.split("|");
       if (parts.length >= 4) {
-        commitsLast7Days.push({
+      commitsLast14Days.push({
           shortHash: parts[0],
           date: parts[1],
           author: parts[2],
@@ -299,22 +299,9 @@ export async function gatherGitContext(
     }
   }
 
-  // Diffstat for the last 20 commits on the current branch
-  let diffstatLast20 = "";
-  // Check how many commits are available
-  const commitCountStr = git(["rev-list", "--count", "HEAD"], absDir);
-  const commitCount = commitCountStr ? parseInt(commitCountStr, 10) : 0;
-  if (commitCount > 1) {
-    const diffRange = commitCount >= 20 ? "HEAD~20..HEAD" : `HEAD~${commitCount - 1}..HEAD`;
-    diffstatLast20 = normalizeDiffstat(git(["diff", "--stat", diffRange], absDir) || "");
-  } else if (commitCount === 1) {
-    // Single commit — diff against the empty tree to show initial changes
-    diffstatLast20 = normalizeDiffstat(git(["diff", "--stat", "4b825dc642cb6eb9a060e54bf899d69f82cf7262", "HEAD"], absDir) || "");
-  }
-
-  // Files changed in the last 7 days (most frequently changed)
+  // Files changed in the last 14 days (most frequently changed)
   const hotFilesRaw = git(
-    ["log", "--all", "--after=7 days ago", "--name-only", "--format="],
+    ["log", "--all", "--after=14 days ago", "--name-only", "--format="],
     absDir,
   );
   const hotFiles: GitContext["recentActivity"]["hotFiles"] = [];
@@ -333,9 +320,9 @@ export async function gatherGitContext(
     }
   }
 
-  // Active contributors in the last 30 days
+  // Active contributors in the last 14 days
   const contributorsRaw = git(
-    ["log", "--all", "--after=30 days ago", "--format=%an <%ae>"],
+    ["log", "--all", "--after=14 days ago", "--format=%an <%ae>"],
     absDir,
   );
   const activeContributors: GitContext["recentActivity"]["activeContributors"] =
@@ -381,10 +368,15 @@ export async function gatherGitContext(
   }
 
   const now = new Date();
-  const sevenDaysAgo = new Date(now);
-  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-  const thirtyDaysAgo = new Date(now);
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  const fourteenDaysAgo = new Date(now);
+  fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+
+  // Compute oldest activity date from the 14-day commit list
+  let oldestActivityDate: string | undefined;
+  if (commitsLast14Days.length > 0) {
+    const oldest = commitsLast14Days[commitsLast14Days.length - 1].date;
+    oldestActivityDate = new Date(oldest).toISOString().slice(0, 10);
+  }
 
   return {
     remotes,
@@ -395,20 +387,18 @@ export async function gatherGitContext(
     lastCommitDate,
     branches,
     recentActivity: {
-      commitsLast7Days,
-      diffstatLast20,
+      commitsLast14Days,
       hotFiles,
       activeContributors,
+      oldestActivityDate,
     },
     tags,
     totalTagCount,
     branchLimitApplied,
     totalBranchCount,
     dateBoundaries: {
-      recentActivityStart: sevenDaysAgo.toISOString().slice(0, 10),
+      recentActivityStart: fourteenDaysAgo.toISOString().slice(0, 10),
       recentActivityEnd: now.toISOString().slice(0, 10),
-      contributorStart: thirtyDaysAgo.toISOString().slice(0, 10),
-      contributorEnd: now.toISOString().slice(0, 10),
     },
   };
 }

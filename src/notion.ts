@@ -83,17 +83,24 @@ function buildGitSummaryRichText(ctx: GitContext): Array<Record<string, unknown>
 
 /**
  * Build the heading text for a branch toggle.
+ * Returns a rich text array with a date mention for the last commit date.
  */
-function buildBranchToggleText(branch: GitContext["branches"][0]): string {
+function buildBranchToggleRichText(branch: GitContext["branches"][0]): Array<Record<string, unknown>> {
   const indicator = branch.isCurrentBranch ? " \u2B05" : "";
   const commitNote = branch.totalCommitCount > branch.commits.length
     ? ` \u2014 showing ${branch.commits.length} of ${branch.totalCommitCount} commits`
     : "";
-  return `${branch.name} (last commit: ${formatDate(branch.lastCommitDate)})${indicator}${commitNote}`;
+  return [
+    { type: "text", text: { content: `${branch.name} (last commit: ` } },
+    dateMention(branch.lastCommitDate),
+    { type: "text", text: { content: `)${indicator}${commitNote}` } },
+  ];
 }
 
 /**
- * Populate a branch toggle with commit children and diffstat sub-toggles.
+ * Populate a branch toggle with commit children.
+ * Commits are rendered in chronological order (oldest first) so new commits
+ * can be appended incrementally during updates.
  * Reused by both populateGitContextPage and updateGitContextPage.
  */
 async function populateBranchCommits(
@@ -107,9 +114,12 @@ async function populateBranchCommits(
     logger.debug(`      ${dedupedCommits.length} commit(s) de-duplicated (shown as one-liners)`);
   }
 
+  // Reverse to chronological order (oldest first) for append-friendly updates
+  const orderedCommits = [...branch.commits].reverse();
+
   // Build children: full commits as toggles, deduplicated as plain text paragraphs
   const commitChildren: BlockObjectRequest[] = [];
-  for (const commit of branch.commits) {
+  for (const commit of orderedCommits) {
     const lineText = `${commit.shortHash} | ${formatDate(commit.date)} | ${commit.author} | ${commit.subject}`;
 
     if (commit.deduplicated) {
@@ -127,6 +137,9 @@ async function populateBranchCommits(
       const innerChildren: BlockObjectRequest[] = [];
       if (commit.body) {
         innerChildren.push(codeBlock(commit.body));
+      }
+      if (commit.diffstat) {
+        innerChildren.push(codeBlock(commit.diffstat));
       }
 
       commitChildren.push({
@@ -151,53 +164,6 @@ async function populateBranchCommits(
       notionClient.blocks.children.append({
         block_id: toggleBlockId,
         children: batch,
-      }),
-    );
-  }
-
-  // Second pass: append diffstat sub-toggles
-  let toggleIndex = 0;
-  const commitToggleIndexMap = new Map<number, number>();
-  for (let ci = 0; ci < branch.commits.length; ci++) {
-    if (!branch.commits[ci].deduplicated) {
-      commitToggleIndexMap.set(ci, toggleIndex);
-      toggleIndex++;
-    }
-  }
-
-  const commitsWithDiffstat = branch.commits
-    .map((commit, idx) => ({ commit, idx }))
-    .filter(({ commit }) => !!commit.diffstat && !commit.deduplicated);
-
-  if (commitsWithDiffstat.length === 0) {
-    logger.debug(`      No diffstats for ${branch.name}`);
-    return;
-  }
-
-  logger.debug(`      Appending diffstats for ${commitsWithDiffstat.length} commit(s) on ${branch.name}...`);
-  const branchChildren = await listAllChildren(toggleBlockId);
-  const commitBlocks = branchChildren.filter(
-    (block) => block.type === "toggle",
-  );
-
-  for (const { commit, idx } of commitsWithDiffstat) {
-    const tIdx = commitToggleIndexMap.get(idx);
-    if (tIdx === undefined || tIdx >= commitBlocks.length) break;
-    const commitBlockId = commitBlocks[tIdx].id;
-
-    const diffstatToggle: BlockObjectRequest = {
-      type: "toggle",
-      toggle: {
-        rich_text: [{ type: "text", text: { content: "Diffstat:" }, annotations: { italic: true, bold: false, code: false, strikethrough: false, underline: false, color: "default" } }],
-        color: "default",
-        children: [codeBlock(commit.diffstat!)],
-      },
-    } as BlockObjectRequest;
-
-    await rateLimiter.schedule(() =>
-      notionClient.blocks.children.append({
-        block_id: commitBlockId,
-        children: [diffstatToggle],
       }),
     );
   }
@@ -226,58 +192,54 @@ export async function populateGitContextPage(
     },
   });
 
-  // 2. Recent Activity heading
-  blocks.push(heading2WithDateRange("Recent Activity", ctx.dateBoundaries.recentActivityStart, ctx.dateBoundaries.recentActivityEnd));
+  // 2. Recent Activity heading (h1, smart start date)
+  const smartStartDate = ctx.recentActivity.oldestActivityDate
+    && ctx.recentActivity.oldestActivityDate > ctx.dateBoundaries.recentActivityStart
+    ? ctx.recentActivity.oldestActivityDate
+    : ctx.dateBoundaries.recentActivityStart;
+  blocks.push(heading1WithDateRange("Recent Activity", smartStartDate, ctx.dateBoundaries.recentActivityEnd));
 
-  if (ctx.recentActivity.commitsLast7Days.length > 0) {
-    const recentLines = ctx.recentActivity.commitsLast7Days.map((c) => {
+  // Recent Commits sub-section (h2)
+  blocks.push(heading2("Recent Commits"));
+
+  if (ctx.recentActivity.commitsLast14Days.length > 0) {
+    const recentLines = ctx.recentActivity.commitsLast14Days.map((c) => {
       const branchTag = c.branches ? ` [${c.branches}]` : "";
       return `${c.shortHash} | ${formatDate(c.date)} | ${c.author} | ${c.subject}${branchTag}`;
     });
     blocks.push(codeBlock(recentLines.join("\n")));
   } else {
-    blocks.push(paragraph("No commits in the last 7 days."));
+    blocks.push(paragraph("No commits in the last 14 days."));
   }
 
-  // Most Changed Files
+  // Recently Changed Files (h2)
   if (ctx.recentActivity.hotFiles.length > 0) {
-    blocks.push(heading3WithDateRange("Most Changed Files", ctx.dateBoundaries.recentActivityStart, ctx.dateBoundaries.recentActivityEnd));
+    blocks.push(heading2("Recently Changed Files"));
     const hotLines = ctx.recentActivity.hotFiles.map(
       (f) => `${f.count} changes | ${f.file}`,
     );
     blocks.push(codeBlock(hotLines.join("\n")));
   }
 
-  // Active Contributors
+  // Recent Contributors (h2)
   if (ctx.recentActivity.activeContributors.length > 0) {
-    blocks.push(heading3WithDateRange("Active Contributors", ctx.dateBoundaries.contributorStart, ctx.dateBoundaries.contributorEnd));
+    blocks.push(heading2("Recent Contributors"));
     const contribLines = ctx.recentActivity.activeContributors.map(
       (c) => `${c.commits} commits | ${c.name}`,
     );
     blocks.push(codeBlock(contribLines.join("\n")));
   }
 
-  // Diffstat
-  if (ctx.recentActivity.diffstatLast20) {
-    blocks.push(heading3("Diffstat (Last 20 Commits)"));
-    blocks.push(codeBlock(ctx.recentActivity.diffstatLast20));
-  }
+  // 4. Branches heading (h1)
+  blocks.push(heading1("Branches"));
 
-  // 4. Branches heading
-  blocks.push(heading2("Branches"));
-
-  // Build toggleable heading blocks for each branch (content added separately)
+  // Build toggleable heading blocks for each branch (h2 with date mention)
   const branchToggleBlocks: BlockObjectRequest[] = [];
   for (const branch of ctx.branches) {
     branchToggleBlocks.push({
-      type: "heading_3",
-      heading_3: {
-        rich_text: [
-          {
-            type: "text",
-            text: { content: buildBranchToggleText(branch) },
-          },
-        ],
+      type: "heading_2",
+      heading_2: {
+        rich_text: buildBranchToggleRichText(branch) as any,
         is_toggleable: true,
         color: "default",
       },
@@ -336,53 +298,58 @@ export async function populateGitContextPage(
   const calloutChild = next();
   blockMap.calloutId = calloutChild.id;
 
-  // 2. Recent Activity heading
+  // 2. Recent Activity h1 heading
   const recentHeading = next();
   blockMap.recentActivityHeadingId = recentHeading.id;
 
-  // 3. Recent Activity code/paragraph
+  // 3. Recent Commits h2 heading
+  const recentCommitsHeading = next();
+  blockMap.recentCommitsHeadingId = recentCommitsHeading.id;
+
+  // 4. Recent Activity code/paragraph
   const recentCode = next();
   blockMap.recentActivityCodeId = recentCode.id;
 
-  // 4-9. Optional sections: hot files, contributors, diffstat
-  // These are non-toggleable heading_3 + code pairs
+  // 5-8. Optional sections: hot files, contributors
+  // These are non-toggleable heading_2 + code pairs
   while (childIdx < allChildren.length) {
     const peek = allChildren[childIdx];
-    if (peek.type === "heading_3") {
-      const h3 = peek.heading_3 as { is_toggleable?: boolean; rich_text?: Array<{ plain_text?: string }> };
-      if (h3?.is_toggleable) break; // Branch toggle \u2014 stop
-      const text = h3?.rich_text?.[0]?.plain_text || "";
-      const block = next();
-      const codeChild = next();
-      if (text.startsWith("Most Changed Files")) {
+    if (peek.type === "heading_2") {
+      const h2 = peek.heading_2 as { is_toggleable?: boolean; rich_text?: Array<{ plain_text?: string }> };
+      if (h2?.is_toggleable) break; // Branch toggle — stop
+      const text = h2?.rich_text?.[0]?.plain_text || "";
+      if (text.startsWith("Recently Changed Files")) {
+        const block = next();
+        const codeChild = next();
         blockMap.hotFilesHeadingId = block.id;
         blockMap.hotFilesCodeId = codeChild.id;
-      } else if (text.startsWith("Active Contributors")) {
+      } else if (text.startsWith("Recent Contributors")) {
+        const block = next();
+        const codeChild = next();
         blockMap.contributorsHeadingId = block.id;
         blockMap.contributorsCodeId = codeChild.id;
-      } else if (text.startsWith("Diffstat")) {
-        blockMap.diffstatHeadingId = block.id;
-        blockMap.diffstatCodeId = codeChild.id;
+      } else {
+        break; // Unknown h2, could be Branches or Tags
       }
-    } else if (peek.type === "heading_2") {
-      break; // Branches heading \u2014 stop
+    } else if (peek.type === "heading_1") {
+      break; // Branches h1 heading — stop
     } else {
       childIdx++; // skip unexpected
     }
   }
 
-  // 10. Branches heading
-  if (childIdx < allChildren.length && allChildren[childIdx].type === "heading_2") {
+  // 9. Branches h1 heading
+  if (childIdx < allChildren.length && allChildren[childIdx].type === "heading_1") {
     blockMap.branchesHeadingId = next().id;
   }
 
-  // 11. Branch toggles (heading_3 with is_toggleable)
+  // 10. Branch toggles (heading_2 with is_toggleable)
   const toggleBlocks: Array<{ id: string }> = [];
   while (childIdx < allChildren.length) {
     const peek = allChildren[childIdx];
-    if (peek.type === "heading_3") {
-      const h3 = peek.heading_3 as { is_toggleable?: boolean };
-      if (h3?.is_toggleable) {
+    if (peek.type === "heading_2") {
+      const h2 = peek.heading_2 as { is_toggleable?: boolean };
+      if (h2?.is_toggleable) {
         toggleBlocks.push(next());
         continue;
       }
@@ -390,7 +357,7 @@ export async function populateGitContextPage(
     break; // tags section or end
   }
 
-  // 12-13. Optional tags
+  // 11-12. Optional tags
   if (childIdx < allChildren.length && allChildren[childIdx].type === "heading_2") {
     blockMap.tagsHeadingId = next().id;
     if (childIdx < allChildren.length) {
@@ -448,19 +415,45 @@ export async function updateGitContextPage(
   });
 
   // Step 2: Update recent activity section
+  const smartStartDate = ctx.recentActivity.oldestActivityDate
+    && ctx.recentActivity.oldestActivityDate > ctx.dateBoundaries.recentActivityStart
+    ? ctx.recentActivity.oldestActivityDate
+    : ctx.dateBoundaries.recentActivityStart;
+
   await updateBlock(existingBlockMap.recentActivityHeadingId, {
-    heading_2: {
+    heading_1: {
       rich_text: [
         { type: "text", text: { content: "Recent Activity (" } },
-        dateRangeMention(ctx.dateBoundaries.recentActivityStart, ctx.dateBoundaries.recentActivityEnd),
+        dateRangeMention(smartStartDate, ctx.dateBoundaries.recentActivityEnd),
         { type: "text", text: { content: ")" } },
       ] as any,
       color: "default",
     },
   });
 
-  if (ctx.recentActivity.commitsLast7Days.length > 0) {
-    const recentLines = ctx.recentActivity.commitsLast7Days.map((c) => {
+  // Update or create Recent Commits h2 heading
+  if (existingBlockMap.recentCommitsHeadingId) {
+    await updateBlock(existingBlockMap.recentCommitsHeadingId, {
+      heading_2: {
+        rich_text: [{ type: "text", text: { content: "Recent Commits" } }],
+        color: "default",
+      },
+    });
+    newBlockMap.recentCommitsHeadingId = existingBlockMap.recentCommitsHeadingId;
+  } else {
+    // Migration: create new h2 heading after the recent activity heading
+    const response = await rateLimiter.schedule(() =>
+      notionClient.blocks.children.append({
+        block_id: pageId,
+        children: [heading2("Recent Commits")],
+        after: existingBlockMap.recentActivityHeadingId,
+      }),
+    );
+    newBlockMap.recentCommitsHeadingId = response.results[0].id;
+  }
+
+  if (ctx.recentActivity.commitsLast14Days.length > 0) {
+    const recentLines = ctx.recentActivity.commitsLast14Days.map((c) => {
       const branchTag = c.branches ? ` [${c.branches}]` : "";
       return `${c.shortHash} | ${formatDate(c.date)} | ${c.author} | ${c.subject}${branchTag}`;
     });
@@ -469,11 +462,11 @@ export async function updateGitContextPage(
     });
   } else {
     await updateBlock(existingBlockMap.recentActivityCodeId, {
-      paragraph: { rich_text: [{ type: "text", text: { content: "No commits in the last 7 days." } }] },
+      paragraph: { rich_text: [{ type: "text", text: { content: "No commits in the last 14 days." } }] },
     });
   }
 
-  // Step 3: Update optional sections (hot files, contributors, diffstat)
+  // Step 3: Update optional sections (hot files, contributors)
   const updateOptionalSection = async (
     existingHeadingId: string | undefined,
     existingCodeId: string | undefined,
@@ -481,15 +474,11 @@ export async function updateGitContextPage(
     headingText: string,
     codeContent: string,
     afterBlockId: string,
-    headingRichText?: Array<Record<string, unknown>>,
   ): Promise<{ headingId?: string; codeId?: string }> => {
-    const richTextForHeading = headingRichText
-      ? headingRichText as any
-      : [{ type: "text", text: { content: headingText } }];
     if (existingHeadingId && existingCodeId && hasData) {
       // Update both
       await updateBlock(existingHeadingId, {
-        heading_3: { rich_text: richTextForHeading, color: "default" },
+        heading_2: { rich_text: [{ type: "text", text: { content: headingText } }], color: "default" },
       });
       await updateBlock(existingCodeId, {
         code: { rich_text: chunkedRichText(codeContent), language: "plain text" },
@@ -502,13 +491,10 @@ export async function updateGitContextPage(
       return {};
     } else if (!existingHeadingId && hasData) {
       // Create new heading + code after afterBlockId
-      const newHeadingBlock: BlockObjectRequest = headingRichText
-        ? { type: "heading_3", heading_3: { rich_text: headingRichText as any, color: "default" } }
-        : heading3(headingText);
       const response = await rateLimiter.schedule(() =>
         notionClient.blocks.children.append({
           block_id: pageId,
-          children: [newHeadingBlock, codeBlock(codeContent)],
+          children: [heading2(headingText), codeBlock(codeContent)],
           after: afterBlockId,
         }),
       );
@@ -531,14 +517,9 @@ export async function updateGitContextPage(
     existingBlockMap.hotFilesHeadingId,
     existingBlockMap.hotFilesCodeId,
     ctx.recentActivity.hotFiles.length > 0,
-    "Most Changed Files",
+    "Recently Changed Files",
     hotFilesContent,
     lastSectionBlockId,
-    [
-      { type: "text", text: { content: "Most Changed Files (" } },
-      dateRangeMention(ctx.dateBoundaries.recentActivityStart, ctx.dateBoundaries.recentActivityEnd),
-      { type: "text", text: { content: ")" } },
-    ],
   );
   newBlockMap.hotFilesHeadingId = hotResult.headingId;
   newBlockMap.hotFilesCodeId = hotResult.codeId;
@@ -552,30 +533,26 @@ export async function updateGitContextPage(
     existingBlockMap.contributorsHeadingId,
     existingBlockMap.contributorsCodeId,
     ctx.recentActivity.activeContributors.length > 0,
-    "Active Contributors",
+    "Recent Contributors",
     contribContent,
     lastSectionBlockId,
-    [
-      { type: "text", text: { content: "Active Contributors (" } },
-      dateRangeMention(ctx.dateBoundaries.contributorStart, ctx.dateBoundaries.contributorEnd),
-      { type: "text", text: { content: ")" } },
-    ],
   );
   newBlockMap.contributorsHeadingId = contribResult.headingId;
   newBlockMap.contributorsCodeId = contribResult.codeId;
   if (contribResult.codeId) lastSectionBlockId = contribResult.codeId;
 
-  // Diffstat
-  const diffstatResult = await updateOptionalSection(
-    existingBlockMap.diffstatHeadingId,
-    existingBlockMap.diffstatCodeId,
-    !!ctx.recentActivity.diffstatLast20,
-    "Diffstat (Last 20 Commits)",
-    ctx.recentActivity.diffstatLast20 || "",
-    lastSectionBlockId,
-  );
-  newBlockMap.diffstatHeadingId = diffstatResult.headingId;
-  newBlockMap.diffstatCodeId = diffstatResult.codeId;
+  // Clean up stale diffstat blocks from old manifests (migration)
+  if ((existingBlockMap as any).diffstatHeadingId) {
+    try {
+      if ((existingBlockMap as any).diffstatCodeId) {
+        await deleteBlock((existingBlockMap as any).diffstatCodeId);
+      }
+      await deleteBlock((existingBlockMap as any).diffstatHeadingId);
+      logger.debug("  Cleaned up stale diffstat blocks from old layout");
+    } catch {
+      logger.debug("  Could not clean up stale diffstat blocks (may already be removed)");
+    }
+  }
 
   // Step 4: Update branches
   const existingBranchNames = new Set(Object.keys(existingBlockMap.branches));
@@ -592,32 +569,66 @@ export async function updateGitContextPage(
 
     const branch = ctx.branches.find((b) => b.name === branchName)!;
     if (entry.lastCommitHash === branch.lastCommitHash) {
-      // Unchanged \u2014 skip entirely
+      // Unchanged \u2014 update heading to new format (h2 with date mention) but skip commits
       logger.debug(`  Skipping branch ${branchName} (unchanged)`);
+      await updateBlock(entry.toggleId, {
+        heading_2: {
+          rich_text: buildBranchToggleRichText(branch) as any,
+          is_toggleable: true,
+          color: "default",
+        },
+      });
       newBlockMap.branches[branchName] = entry;
     } else {
-      // Changed \u2014 update heading, clear children, repopulate
+      // Changed \u2014 incremental append
       logger.debug(`  Updating branch ${branchName} (changed)...`);
+
+      // Update heading to new format (h2 with date mention)
       await updateBlock(entry.toggleId, {
-        heading_3: {
-          rich_text: [{ type: "text", text: { content: buildBranchToggleText(branch) } }],
+        heading_2: {
+          rich_text: buildBranchToggleRichText(branch) as any,
           is_toggleable: true,
           color: "default",
         },
       });
 
-      // Clear toggle children
-      const toggleChildren = await listAllChildren(entry.toggleId);
-      for (const child of toggleChildren) {
-        await deleteBlock(child.id);
-      }
+      // Find where the new commits start
+      const lastKnownHash = entry.lastCommitHash;
+      const newCommitIndex = branch.commits.findIndex(
+        (c) => c.shortHash === lastKnownHash || c.hash === lastKnownHash,
+      );
 
-      // Repopulate
-      await populateBranchCommits(entry.toggleId, branch);
-      newBlockMap.branches[branchName] = {
-        toggleId: entry.toggleId,
-        lastCommitHash: branch.lastCommitHash,
-      };
+      if (newCommitIndex === -1) {
+        // lastCommitHash not found \u2014 force push or rebase, fall back to full rewrite
+        logger.debug(`    Force push/rebase detected for ${branchName} (hash ${lastKnownHash} not found), full rewrite`);
+        const toggleChildren = await listAllChildren(entry.toggleId);
+        for (const child of toggleChildren) {
+          await deleteBlock(child.id);
+        }
+        await populateBranchCommits(entry.toggleId, branch);
+        newBlockMap.branches[branchName] = {
+          toggleId: entry.toggleId,
+          lastCommitHash: branch.lastCommitHash,
+        };
+      } else {
+        // Commits before newCommitIndex are new (git log is newest-first)
+        const newCommits = branch.commits.slice(0, newCommitIndex);
+
+        if (newCommits.length === 0) {
+          // No new commits despite hash mismatch (shouldn't happen)
+          newBlockMap.branches[branchName] = entry;
+        } else {
+          // Append only new commits at the END (chronological order)
+          const newCommitsChronological = [...newCommits].reverse();
+          const tempBranch = { ...branch, commits: newCommitsChronological };
+          await populateBranchCommits(entry.toggleId, tempBranch);
+
+          newBlockMap.branches[branchName] = {
+            toggleId: entry.toggleId,
+            lastCommitHash: branch.lastCommitHash,
+          };
+        }
+      }
     }
   }
 
@@ -631,9 +642,9 @@ export async function updateGitContextPage(
         block_id: pageId,
         children: [
           {
-            type: "heading_3",
-            heading_3: {
-              rich_text: [{ type: "text", text: { content: buildBranchToggleText(branch) } }],
+            type: "heading_2",
+            heading_2: {
+              rich_text: buildBranchToggleRichText(branch) as any,
               is_toggleable: true,
               color: "default",
             },
@@ -695,6 +706,32 @@ function formatDate(isoDate: string): string {
   }
 }
 
+/** Create a heading_1 block */
+function heading1(text: string): BlockObjectRequest {
+  return {
+    type: "heading_1",
+    heading_1: {
+      rich_text: [{ type: "text", text: { content: text } }],
+      color: "default",
+    },
+  };
+}
+
+/** Create a heading_1 block with a date range mention */
+function heading1WithDateRange(prefix: string, startDate: string, endDate: string): BlockObjectRequest {
+  return {
+    type: "heading_1",
+    heading_1: {
+      rich_text: [
+        { type: "text", text: { content: `${prefix} (` } },
+        dateRangeMention(startDate, endDate) as any,
+        { type: "text", text: { content: ")" } },
+      ],
+      color: "default",
+    },
+  };
+}
+
 /** Create a heading_2 block */
 function heading2(text: string): BlockObjectRequest {
   return {
@@ -706,37 +743,11 @@ function heading2(text: string): BlockObjectRequest {
   };
 }
 
-/** Create a non-toggleable heading_3 block */
-function heading3(text: string): BlockObjectRequest {
-  return {
-    type: "heading_3",
-    heading_3: {
-      rich_text: [{ type: "text", text: { content: text } }],
-      color: "default",
-    },
-  };
-}
-
 /** Create a heading_2 block with a date range mention */
 function heading2WithDateRange(prefix: string, startDate: string, endDate: string): BlockObjectRequest {
   return {
     type: "heading_2",
     heading_2: {
-      rich_text: [
-        { type: "text", text: { content: `${prefix} (` } },
-        dateRangeMention(startDate, endDate) as any,
-        { type: "text", text: { content: ")" } },
-      ],
-      color: "default",
-    },
-  };
-}
-
-/** Create a heading_3 block with a date range mention */
-function heading3WithDateRange(prefix: string, startDate: string, endDate: string): BlockObjectRequest {
-  return {
-    type: "heading_3",
-    heading_3: {
       rich_text: [
         { type: "text", text: { content: `${prefix} (` } },
         dateRangeMention(startDate, endDate) as any,
