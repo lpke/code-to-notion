@@ -2,7 +2,7 @@ import { Client } from "@notionhq/client";
 import type { BlockObjectRequest } from "@notionhq/client/build/src/api-endpoints/common.js";
 import type { LanguageRequest } from "@notionhq/client/build/src/api-endpoints/common.js";
 import { RateLimiter } from "./rate-limiter.js";
-import type { GitContext } from "./types.js";
+import type { GitContext, Manifest } from "./types.js";
 import * as logger from "./logger.js";
 
 let notionClient: Client;
@@ -25,7 +25,7 @@ export function initNotion(apiToken: string, concurrency: number): void {
 export async function appendGitContextPage(
   parentPageId: string,
   ctx: GitContext,
-): Promise<void> {
+): Promise<string> {
   // Create the child page
   logger.debug("  Creating git context page...");
 const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
@@ -303,6 +303,8 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
       );
     }
   }
+
+  return pageId;
 }
 
 /** Format an ISO date string to a shorter human-readable format */
@@ -493,9 +495,16 @@ export async function appendMetadataBlock(
   filePath: string,
   fileSize: string,
   truncated: boolean,
+  hash?: string,
 ): Promise<void> {
   const timestamp = new Date().toISOString();
-  let text = `\uD83D\uDCC2 ${filePath}\n\uD83D\uDCCA ${fileSize}\n\uD83D\uDD52 ${timestamp}`;
+  let text = `\uD83D\uDCC2 ${filePath}\n\uD83D\uDCCA ${fileSize}`;
+
+  if (hash) {
+    text += `\n\uD83D\uDD11 ${hash}`;
+  }
+
+  text += `\n\uD83D\uDD52 ${timestamp}`;
 
   if (truncated) {
     text += "\n\u26A0\uFE0F File was truncated to 500KB for upload";
@@ -553,4 +562,178 @@ export async function appendRootCallout(
       children: [block],
     }),
   );
+}
+
+
+
+/**
+ * Find a child page by its title under a given parent.
+ * Paginates through all children blocks.
+ */
+export async function findChildPageByTitle(
+  parentId: string,
+  title: string,
+): Promise<string | null> {
+  let cursor: string | undefined = undefined;
+  do {
+    const response = await rateLimiter.schedule(() =>
+      notionClient.blocks.children.list({
+        block_id: parentId,
+        page_size: 100,
+        ...(cursor ? { start_cursor: cursor } : {}),
+      }),
+    );
+
+    for (const block of response.results) {
+      const b = block as Record<string, unknown>;
+      if (
+        b.type === "child_page" &&
+        (b.child_page as { title: string })?.title === title
+      ) {
+        return b.id as string;
+      }
+    }
+
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+
+  return null;
+}
+
+/**
+ * Delete a block by its ID.
+ */
+export async function deleteBlock(blockId: string): Promise<void> {
+  await rateLimiter.schedule(() =>
+    notionClient.blocks.delete({ block_id: blockId }),
+  );
+}
+
+/**
+ * List ALL children of a block, handling pagination.
+ */
+export async function listAllChildren(
+  blockId: string,
+): Promise<Array<{ id: string; type: string; [key: string]: unknown }>> {
+  const all: Array<{ id: string; type: string; [key: string]: unknown }> = [];
+  let cursor: string | undefined = undefined;
+
+  do {
+    const response = await rateLimiter.schedule(() =>
+      notionClient.blocks.children.list({
+        block_id: blockId,
+        page_size: 100,
+        ...(cursor ? { start_cursor: cursor } : {}),
+      }),
+    );
+
+    for (const block of response.results) {
+      all.push(block as { id: string; type: string; [key: string]: unknown });
+    }
+
+    cursor = response.has_more ? (response.next_cursor ?? undefined) : undefined;
+  } while (cursor);
+
+  return all;
+}
+
+/**
+ * Clear all content from a page by deleting every child block.
+ */
+export async function clearPageContent(pageId: string): Promise<void> {
+  const children = await listAllChildren(pageId);
+  for (const child of children) {
+    await deleteBlock(child.id);
+  }
+}
+
+/**
+ * Read the manifest from a .manifest child page under the project root.
+ * Returns the parsed manifest and its page ID, or null if not found.
+ */
+export async function readManifest(
+  projectRootId: string,
+): Promise<{ manifest: Manifest; manifestPageId: string } | null> {
+  const manifestPageId = await findChildPageByTitle(
+    projectRootId,
+    ".manifest",
+  );
+  if (!manifestPageId) return null;
+
+  try {
+    const children = await listAllChildren(manifestPageId);
+
+    // Find the code block
+    const codeBlockNode = children.find((b) => b.type === "code");
+    if (!codeBlockNode) return null;
+
+    const code = codeBlockNode.code as {
+      rich_text: Array<{ plain_text: string }>;
+    };
+    if (!code?.rich_text) return null;
+
+    const jsonText = code.rich_text.map((rt) => rt.plain_text).join("");
+    const manifest = JSON.parse(jsonText) as Manifest;
+    return { manifest, manifestPageId };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write (or overwrite) the manifest as a JSON code block in a .manifest child page.
+ * Returns the manifest page ID.
+ */
+export async function writeManifest(
+  projectRootId: string,
+  manifest: Manifest,
+  existingManifestPageId?: string,
+): Promise<string> {
+  let manifestPageId: string;
+
+  if (existingManifestPageId) {
+    manifestPageId = existingManifestPageId;
+    await clearPageContent(manifestPageId);
+  } else {
+    // File cabinet emoji: \u{1F5C4}\uFE0F
+    manifestPageId = await createNotionPage(
+      projectRootId,
+      ".manifest",
+      "\u{1F5C4}\uFE0F",
+    );
+  }
+
+  const jsonStr = JSON.stringify(manifest, null, 2);
+
+  // Chunk into 2000-char rich text elements
+  const MAX_CHUNK = 2000;
+  const richText: Array<{ type: "text"; text: { content: string } }> = [];
+  let remaining = jsonStr;
+  while (remaining.length > 0) {
+    richText.push({
+      type: "text",
+      text: { content: remaining.slice(0, MAX_CHUNK) },
+    });
+    remaining = remaining.slice(MAX_CHUNK);
+  }
+  if (richText.length === 0) {
+    richText.push({ type: "text", text: { content: "{}" } });
+  }
+
+  const block: BlockObjectRequest = {
+    type: "code",
+    code: {
+      rich_text: richText,
+      language: "json",
+    },
+  };
+
+  await rateLimiter.schedule(() =>
+    notionClient.blocks.children.append({
+      block_id: manifestPageId,
+      children: [block],
+    }),
+  );
+
+  return manifestPageId;
 }

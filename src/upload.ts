@@ -4,7 +4,7 @@ import {
   APIErrorCode,
   isNotionClientError,
 } from "@notionhq/client";
-import type { FileNode, UploadOptions, UploadError } from "./types.js";
+import type { FileNode, UploadOptions, UploadError, ManifestBuilder } from "./types.js";
 import {
   buildFileTree,
   countNodes,
@@ -22,9 +22,12 @@ import {
   appendMetadataBlock,
   appendRootCallout,
   appendGitContextPage,
+  writeManifest,
 } from "./notion.js";
 import * as logger from "./logger.js";
 import { gatherGitContext } from "./git.js";
+import { computeHash } from "./manifest.js";
+import { buildManifest } from "./manifest.js";
 import type { Config } from "./types.js";
 
 const MAX_RETRIES = 3;
@@ -111,6 +114,7 @@ export async function upload(
   const errors: UploadError[] = [];
   let pagesCreated = 0;
   let filesUploaded = 0;
+  const manifestBuilder: ManifestBuilder = { files: {}, directories: {} };
 
   let rootPageId = "";
 
@@ -151,10 +155,11 @@ export async function upload(
     );
 
     // Upload git context page
+    let gitContextPageId: string | undefined;
     if (gitContext) {
       try {
         logger.updateSpinner("\uD83D\uDCDD Uploading git context...");
-        await appendGitContextPage(rootPageId, gitContext);
+        gitContextPageId = await appendGitContextPage(rootPageId, gitContext);
         pagesCreated++;
         logger.debug("\u2713 Git context uploaded");
       } catch (err: unknown) {
@@ -176,8 +181,25 @@ export async function upload(
         incrementFiles: () => { filesUploaded++; },
         totalFiles: fileCount,
         verbose: options.verbose,
+        manifestBuilder,
       },
     );
+
+    // Write manifest
+    try {
+      const manifest = buildManifest(
+        rootPageId,
+        manifestBuilder.files,
+        manifestBuilder.directories,
+        gitContextPageId,
+      );
+      await writeManifest(rootPageId, manifest);
+      pagesCreated++;
+      logger.debug("Manifest written");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(`Failed to write manifest (upload still succeeded): ${message}`);
+    }
 
     const elapsedMs = Date.now() - startTime;
 
@@ -216,6 +238,7 @@ interface UploadContext {
   incrementFiles: () => void;
   totalFiles: number;
   verbose: boolean;
+  manifestBuilder: ManifestBuilder;
 }
 
 async function uploadChildren(
@@ -244,6 +267,7 @@ async function uploadDirectory(
     logger.debug(`Creating directory page: ${node.path}`);
     const pageId = await createDirectoryPage(parentPageId, node.name);
     ctx.incrementPages();
+    ctx.manifestBuilder.directories[node.path] = { pageId };
 
     if (node.children) {
       await uploadChildren(node.children, pageId, absRoot, ctx);
@@ -283,17 +307,24 @@ async function uploadFile(
         node.size || 0,
       );
 
+      // Compute content hash
+      const hash = computeHash(content);
+
       // Append metadata callout
       await appendMetadataBlock(
         pageId,
         node.path,
         formatBytes(node.size || 0),
         truncated,
+        hash,
       );
 
       // Chunk and append code blocks
       const chunks = chunkFileContent(content);
       await appendCodeBlocks(pageId, chunks, node.language || "plain text");
+
+      // Record in manifest
+      ctx.manifestBuilder.files[node.path] = { pageId, hash, size: node.size || 0 };
 
       ctx.incrementFiles();
       logger.debug(`  \u2713 ${node.path}`);

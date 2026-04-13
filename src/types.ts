@@ -18,6 +18,8 @@ export interface UploadOptions {
   concurrency: number;
   verbose: boolean;
   skipGitContext: boolean;
+  update?: boolean;
+  replace?: boolean;
 }
 
 /** A node in the file tree */
@@ -97,4 +99,48 @@ export interface GitContext {
   totalTagCount: number;
   branchLimitApplied: boolean;
   totalBranchCount: number;
+}
+
+
+
+/** A single file entry in the manifest */
+export interface ManifestFileEntry {
+  pageId: string;
+  hash: string;
+  size: number;
+}
+
+/** A single directory entry in the manifest */
+export interface ManifestDirEntry {
+  pageId: string;
+}
+
+/** The manifest stored as JSON in a .manifest child page */
+export interface Manifest {
+  version: 1;
+  createdAt: string;
+  updatedAt: string;
+  rootPageId: string;
+  gitContextPageId?: string;
+  files: Record<string, ManifestFileEntry>;
+  directories: Record<string, ManifestDirEntry>;
+}
+
+/** Diff between local file state and the remote manifest */
+export interface ManifestDiff {
+  added: string[];
+  modified: string[];
+  deleted: string[];
+  unchanged: string[];
+  addedDirs: string[];
+  deletedDirs: string[];
+}
+
+/** Action to take when a project with the same name already exists */
+export type ExistingAction = 'update' | 'replace' | 'new' | 'cancel';
+
+/** Accumulator for building a manifest during upload */
+export interface ManifestBuilder {
+  files: Record<string, ManifestFileEntry>;
+  directories: Record<string, ManifestDirEntry>;
 }

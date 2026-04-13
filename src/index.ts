@@ -22,6 +22,8 @@ program
   .option("--concurrency <n>", "Max concurrent API requests (default: 2, max: 3)", "2")
   .option("--verbose", "Print detailed per-file progress", false)
   .option("--skip-git-context", "Skip git context gathering even if .git exists", false)
+  .option("--update", "Update existing upload if found (only upload changes)", false)
+  .option("--replace", "Replace existing upload if found (delete and re-upload)", false)
   .action(async (dir: string, opts: {
     name?: string;
     only?: string[];
@@ -30,8 +32,16 @@ program
     concurrency: string;
     verbose: boolean;
     skipGitContext: boolean;
+    update: boolean;
+    replace: boolean;
   }) => {
     try {
+      // Validate mutually exclusive flags
+      if (opts.update && opts.replace) {
+        logger.error("--update and --replace are mutually exclusive.");
+        process.exit(1);
+      }
+
       // Validate directory exists
       const absDir = path.resolve(dir);
       if (!fs.existsSync(absDir)) {
@@ -55,6 +65,8 @@ program
         concurrency,
         verbose: opts.verbose,
         skipGitContext: opts.skipGitContext,
+        update: opts.update || undefined,
+        replace: opts.replace || undefined,
       };
 
       // Load config (only required for non-dry-run)
