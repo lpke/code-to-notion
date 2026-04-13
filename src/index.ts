@@ -69,9 +69,9 @@ program
         replace: opts.replace || undefined,
       };
 
-      // Load config (only required for non-dry-run)
-      if (options.dryRun) {
-        // For dry run, we don't need Notion credentials
+      // Load config (only required for non-dry-run, or dry-run with --update/--replace)
+      if (options.dryRun && !options.update && !options.replace) {
+        // Pure dry run — no Notion credentials needed
         await upload(options, {
           notionApiToken: "",
           notionCodebasesPageId: "",

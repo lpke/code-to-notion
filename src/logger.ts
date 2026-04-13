@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import ora, { type Ora } from "ora";
-import type { FileNode } from "./types.js";
+import type { FileNode, ManifestDiff, UploadError } from "./types.js";
 
 let verboseMode = false;
 let currentSpinner: Ora | null = null;
@@ -244,3 +244,96 @@ function printTreeChild(node: FileNode, linePrefix: string, childrenPrefix: stri
   }
 }
 
+
+
+
+export function logDiffSummary(diff: ManifestDiff): void {
+  console.log("");
+  console.log(chalk.cyan("📊 Changes detected:"));
+
+  const addedFiles = diff.added.length;
+  const addedDirs = diff.addedDirs.length;
+  const modifiedFiles = diff.modified.length;
+  const deletedFiles = diff.deleted.length;
+  const deletedDirs = diff.deletedDirs.length;
+  const unchangedFiles = diff.unchanged.length;
+
+  if (addedFiles > 0 || addedDirs > 0) {
+    let line = `   Added:     ${addedFiles} file(s)`;
+    if (addedDirs > 0) line += `, ${addedDirs} dir(s)`;
+    console.log(chalk.green(line));
+  }
+  if (modifiedFiles > 0) {
+    console.log(chalk.yellow(`   Modified:  ${modifiedFiles} file(s)`));
+  }
+  if (deletedFiles > 0 || deletedDirs > 0) {
+    let line = `   Deleted:   ${deletedFiles} file(s)`;
+    if (deletedDirs > 0) line += `, ${deletedDirs} dir(s)`;
+    console.log(chalk.red(line));
+  }
+  console.log(chalk.dim(`   Unchanged: ${unchangedFiles} file(s)`));
+  console.log("");
+}
+
+export function printUpdateSummary(opts: {
+  pagesCreated: number;
+  pagesDeleted: number;
+  totalTime: number;
+  errors: UploadError[];
+  diff: ManifestDiff;
+  rootPageId: string;
+  wasCancelled?: boolean;
+}): void {
+  stopSpinner();
+
+  const notionUrl = `https://notion.so/${opts.rootPageId.replace(/-/g, "")}`;
+  const timeStr = (opts.totalTime / 1000).toFixed(1);
+
+  console.log("");
+  if (opts.wasCancelled) {
+    console.log(chalk.yellow("═".repeat(50)));
+    console.log(chalk.yellow.bold(" ⚠ Update cancelled"));
+    console.log(chalk.yellow("═".repeat(50)));
+  } else {
+    console.log(chalk.green("═".repeat(50)));
+    console.log(chalk.green.bold(" ✓ Update complete!"));
+    console.log(chalk.green("═".repeat(50)));
+  }
+
+  if (opts.diff.added.length > 0) {
+    console.log(`  ${chalk.green("Added:")}         ${opts.diff.added.length} file(s)`);
+  }
+  if (opts.diff.modified.length > 0) {
+    console.log(`  ${chalk.yellow("Modified:")}      ${opts.diff.modified.length} file(s)`);
+  }
+  if (opts.diff.deleted.length > 0) {
+    console.log(`  ${chalk.red("Deleted:")}       ${opts.diff.deleted.length} file(s)`);
+  }
+  if (opts.diff.unchanged.length > 0) {
+    console.log(`  ${chalk.dim("Unchanged:")}     ${opts.diff.unchanged.length} file(s)`);
+  }
+  if (opts.diff.addedDirs.length > 0) {
+    console.log(`  ${chalk.green("New dirs:")}      ${opts.diff.addedDirs.length}`);
+  }
+  if (opts.diff.deletedDirs.length > 0) {
+    console.log(`  ${chalk.red("Removed dirs:")}  ${opts.diff.deletedDirs.length}`);
+  }
+
+  console.log(`  ${chalk.cyan("Pages created:")} ${opts.pagesCreated}`);
+  console.log(`  ${chalk.cyan("Pages deleted:")} ${opts.pagesDeleted}`);
+  console.log(`  ${chalk.cyan("Time elapsed:")}  ${timeStr}s`);
+
+  if (opts.errors.length > 0) {
+    console.log(
+      `  ${chalk.red("Errors:")}         ${opts.errors.length} file(s) failed`,
+    );
+    for (const err of opts.errors) {
+      console.log(chalk.red(`    ✗ ${err.filePath}: ${err.error.message}`));
+    }
+  }
+
+  console.log(`  ${chalk.cyan("Notion page:")}   ${notionUrl}`);
+  const borderColor = opts.wasCancelled ? chalk.yellow : chalk.green;
+  console.log(borderColor("═".repeat(50)));
+  console.log("");
+}

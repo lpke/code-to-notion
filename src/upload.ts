@@ -4,13 +4,14 @@ import {
   APIErrorCode,
   isNotionClientError,
 } from "@notionhq/client";
-import type { FileNode, UploadOptions, UploadError, ManifestBuilder } from "./types.js";
+import type { FileNode, UploadOptions, UploadError, ManifestBuilder, ManifestDiff, ManifestFileEntry, ManifestDirEntry } from "./types.js";
 import {
   buildFileTree,
   countNodes,
   readFileContent,
   formatBytes,
   getIgnorePatternsDisplay,
+  detectLanguage,
 } from "./files.js";
 import { chunkFileContent } from "./chunker.js";
 import {
@@ -23,11 +24,15 @@ import {
   appendRootCallout,
   appendGitContextPage,
   writeManifest,
+  findChildPageByTitle,
+  deleteBlock,
+  readManifest,
+  listAllChildren,
 } from "./notion.js";
 import * as logger from "./logger.js";
 import { gatherGitContext } from "./git.js";
-import { computeHash } from "./manifest.js";
-import { buildManifest } from "./manifest.js";
+import { computeHash, buildLocalFileMap, collectDirPaths, diffManifest, buildManifest } from "./manifest.js";
+import { promptExistingAction } from "./prompt.js";
 import type { Config } from "./types.js";
 
 const MAX_RETRIES = 3;
@@ -64,17 +69,12 @@ export async function upload(
   let estimatedGitApiCalls = 0;
   const includeGit = !options.skipGitContext;
   if (includeGit) {
-    // Fixed costs: 1 create page + 1 append top-level blocks + 1 list page children
-    // Per branch: 1 append commit blocks + 1 list branch children + N diffstat appends
-    // (where N = number of commits with diffstats, roughly all of them)
     const branchEstimate = Math.min(dirCount > 0 ? 5 : 2, 20);
-    // Default branch gets 50 commits, others get 20
     const defaultBranchCommits = 50;
     const otherBranchCommits = 20;
     const avgCommitsPerBranch = branchEstimate > 1
       ? Math.round((defaultBranchCommits + (branchEstimate - 1) * otherBranchCommits) / branchEstimate)
       : defaultBranchCommits;
-    // Per branch: 1 (append commits) + 1 (list children) + avgCommits (diffstats)
     const perBranchCalls = 2 + avgCommitsPerBranch;
     estimatedGitApiCalls = 3 + (branchEstimate * perBranchCalls);
   }
@@ -96,8 +96,8 @@ export async function upload(
     return;
   }
 
-  // Step 3: Dry run - print tree and exit
-  if (options.dryRun) {
+  // Step 3: Dry run without --update/--replace — print tree and exit
+  if (options.dryRun && !options.update && !options.replace) {
     logger.info("\n\uD83C\uDF33 File tree (dry run):\n");
     logger.printTree(tree);
     logger.info("\n\u2139\uFE0F  Dry run complete. No API calls were made.");
@@ -106,6 +106,88 @@ export async function upload(
 
   // Step 4: Initialise Notion client
   initNotion(config.notionApiToken, options.concurrency);
+
+  // Step 5: Detect existing project
+  const existingPageId = await findChildPageByTitle(
+    config.notionCodebasesPageId,
+    projectName,
+  );
+
+  if (!existingPageId) {
+    // No existing project — fresh upload
+    if (options.dryRun) {
+      // --dry-run with --update/--replace but nothing exists
+      logger.info("\n\uD83C\uDF33 File tree (dry run):\n");
+      logger.printTree(tree);
+      logger.info("\n\u2139\uFE0F  No existing project found. A fresh upload would be performed.");
+      return;
+    }
+    await freshUpload(projectName, tree, absDir, options, config);
+    return;
+  }
+
+  // Step 6: Existing project found — determine action
+  let action: 'update' | 'replace' | 'new' | 'cancel';
+  if (options.update) {
+    action = 'update';
+  } else if (options.replace) {
+    action = 'replace';
+  } else {
+    // Interactive prompt (before cancellation listener)
+    action = await promptExistingAction(projectName);
+  }
+
+  // Step 7: Route based on action
+  switch (action) {
+    case 'cancel':
+      logger.info("Cancelled.");
+      return;
+
+    case 'replace':
+      if (options.dryRun) {
+        logger.info("\n\uD83C\uDF33 File tree (dry run):\n");
+        logger.printTree(tree);
+        logger.info("\n\u2139\uFE0F  Dry run: existing page would be deleted and a fresh upload performed.");
+        return;
+      }
+      logger.info("\n\uD83D\uDDD1\uFE0F  Replacing existing page...");
+      await deleteBlock(existingPageId);
+      await freshUpload(projectName, tree, absDir, options, config);
+      return;
+
+    case 'new':
+      if (options.dryRun) {
+        logger.info("\n\uD83C\uDF33 File tree (dry run):\n");
+        logger.printTree(tree);
+        logger.info("\n\u2139\uFE0F  Dry run: a new page would be created alongside the existing one.");
+        return;
+      }
+      await freshUpload(projectName, tree, absDir, options, config);
+      return;
+
+    case 'update':
+      if (options.dryRun) {
+        await dryRunUpdate(existingPageId, tree, absDir, options);
+        return;
+      }
+      await updateExisting(existingPageId, tree, absDir, options, config);
+      return;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Fresh upload (extracted from original upload function)
+// ---------------------------------------------------------------------------
+
+async function freshUpload(
+  projectName: string,
+  tree: FileNode,
+  absDir: string,
+  options: UploadOptions,
+  config: Config,
+): Promise<void> {
+  const includeGit = !options.skipGitContext;
+  const fileCount = countNodes(tree).files;
 
   // Start listening for cancellation (q key / ctrl+c)
   logger.startCancellationListener();
@@ -134,7 +216,7 @@ export async function upload(
       options.ignore,
     );
 
-    // Step 4b: Gather git context (before root callout so we can include branch info)
+    // Gather git context (before root callout so we can include branch info)
     let gitContext: Awaited<ReturnType<typeof gatherGitContext>> = null;
     if (includeGit) {
       try {
@@ -168,7 +250,7 @@ export async function upload(
       }
     }
 
-    // Step 5: Recursively upload
+    // Recursively upload
     await uploadChildren(
       tree.children || [],
       rootPageId,
@@ -203,7 +285,7 @@ export async function upload(
 
     const elapsedMs = Date.now() - startTime;
 
-    // Step 6: Print summary
+    // Print summary
     logger.stopCancellationListener();
     logger.printSummary({
       totalPages: pagesCreated,
@@ -229,6 +311,400 @@ export async function upload(
     throw err;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Incremental update
+// ---------------------------------------------------------------------------
+
+async function updateExisting(
+  existingRootPageId: string,
+  tree: FileNode,
+  absDir: string,
+  options: UploadOptions,
+  config: Config,
+): Promise<void> {
+  const includeGit = !options.skipGitContext;
+  const fileCount = countNodes(tree).files;
+
+  // 1. Read manifest
+  logger.startSpinner("Reading manifest...");
+  const manifestResult = await readManifest(existingRootPageId);
+
+  if (!manifestResult) {
+    logger.warn("No manifest found. Cannot perform incremental update. Falling back to replace...");
+    await deleteBlock(existingRootPageId);
+    const projectName = options.name || path.basename(absDir);
+    await freshUpload(projectName, tree, absDir, options, config);
+    return;
+  }
+
+  const { manifest, manifestPageId } = manifestResult;
+
+  // 2. Compute local hashes
+  logger.updateSpinner("Computing file hashes...");
+  const localFiles = buildLocalFileMap(tree, absDir);
+  const localDirs = collectDirPaths(tree);
+
+  // 3. Gather git context (local-only, no API calls)
+  let gitContext: Awaited<ReturnType<typeof gatherGitContext>> = null;
+  if (includeGit) {
+    try {
+      gitContext = await gatherGitContext(absDir);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(`Git context failed (continuing with update): ${message}`);
+    }
+  }
+
+  // 4. Diff
+  const diff = diffManifest(localFiles, localDirs, manifest);
+  logger.succeedSpinner("Diff computed");
+  logger.logDiffSummary(diff);
+
+  // 5. Early exit if nothing changed
+  if (
+    diff.added.length === 0 &&
+    diff.modified.length === 0 &&
+    diff.deleted.length === 0 &&
+    diff.addedDirs.length === 0 &&
+    diff.deletedDirs.length === 0
+  ) {
+    logger.success("\u2728 Everything is up to date!");
+    return;
+  }
+
+  // 6. Start cancellation listener + timers
+  logger.startCancellationListener();
+  const startTime = Date.now();
+  const errors: UploadError[] = [];
+  let pagesCreated = 0;
+  let pagesDeleted = 0;
+
+  try {
+    // ---------------------------------------------------------------
+    // Phase 1: Deletions
+    // ---------------------------------------------------------------
+
+    // Delete modified file pages (will be recreated in Phase 3)
+    for (const filePath of diff.modified) {
+      logger.throwIfCancelled();
+      const entry = manifest.files[filePath];
+      if (entry) {
+        try {
+          logger.debug(`Deleting modified: ${filePath}`);
+          await deleteBlock(entry.pageId);
+          pagesDeleted++;
+        } catch {
+          logger.warn(`Could not delete page for modified file: ${filePath} (may have been manually removed)`);
+        }
+      }
+    }
+
+    // Delete removed file pages
+    for (const filePath of diff.deleted) {
+      logger.throwIfCancelled();
+      const entry = manifest.files[filePath];
+      if (entry) {
+        try {
+          logger.debug(`Deleting removed: ${filePath}`);
+          await deleteBlock(entry.pageId);
+          pagesDeleted++;
+        } catch {
+          logger.warn(`Could not delete page for removed file: ${filePath} (may have been manually removed)`);
+        }
+      }
+    }
+
+    // Delete removed directory pages (sorted bottom-up by diffManifest)
+    for (const dirPath of diff.deletedDirs) {
+      logger.throwIfCancelled();
+      const entry = manifest.directories[dirPath];
+      if (entry) {
+        try {
+          logger.debug(`Deleting removed dir: ${dirPath}`);
+          await deleteBlock(entry.pageId);
+          pagesDeleted++;
+        } catch {
+          logger.warn(`Could not delete page for removed dir: ${dirPath} (may have been manually removed)`);
+        }
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 2: Directory creations
+    // ---------------------------------------------------------------
+
+    // Build working directory map from surviving manifest directories
+    const dirPageIds: Record<string, ManifestDirEntry> = {};
+    const deletedDirSet = new Set(diff.deletedDirs);
+    for (const [dirPath, entry] of Object.entries(manifest.directories)) {
+      if (!deletedDirSet.has(dirPath)) {
+        dirPageIds[dirPath] = entry;
+      }
+    }
+
+    // Create new directories (sorted top-down by diffManifest)
+    for (const dirPath of diff.addedDirs) {
+      logger.throwIfCancelled();
+      const parentDir = path.dirname(dirPath);
+      let parentPageId: string;
+      if (parentDir === ".") {
+        parentPageId = existingRootPageId;
+      } else if (dirPageIds[parentDir]) {
+        parentPageId = dirPageIds[parentDir].pageId;
+      } else {
+        logger.error(`Cannot create directory ${dirPath}: parent ${parentDir} not found`);
+        continue;
+      }
+
+      try {
+        logger.debug(`Creating dir: ${dirPath}`);
+        const pageId = await createDirectoryPage(parentPageId, path.basename(dirPath));
+        dirPageIds[dirPath] = { pageId };
+        pagesCreated++;
+      } catch (err: unknown) {
+        if (err instanceof logger.CancelledError) throw err;
+        const error = err instanceof Error ? err : new Error(String(err));
+        logger.error(`Failed to create directory page: ${dirPath} - ${error.message}`);
+        errors.push({ filePath: dirPath, error });
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 3: File creations (added + modified)
+    // ---------------------------------------------------------------
+
+    const filesToUpload = [...diff.added, ...diff.modified];
+
+    // Start with unchanged file entries from the old manifest
+    const newFileEntries: Record<string, ManifestFileEntry> = {};
+    for (const filePath of diff.unchanged) {
+      newFileEntries[filePath] = manifest.files[filePath];
+    }
+
+    for (let i = 0; i < filesToUpload.length; i++) {
+      logger.throwIfCancelled();
+      const filePath = filesToUpload[i];
+      const localInfo = localFiles.get(filePath);
+      if (!localInfo) continue;
+
+      const parentDir = path.dirname(filePath);
+      let parentPageId: string;
+      if (parentDir === ".") {
+        parentPageId = existingRootPageId;
+      } else if (dirPageIds[parentDir]) {
+        parentPageId = dirPageIds[parentDir].pageId;
+      } else {
+        const error = new Error(`Parent directory ${parentDir} not found`);
+        logger.error(`Cannot create file ${filePath}: ${error.message}`);
+        errors.push({ filePath, error });
+        continue;
+      }
+
+      const label = diff.added.includes(filePath) ? "Adding" : "Updating";
+      logger.printProgress(i + 1, filesToUpload.length, `${label} ${filePath}`);
+
+      try {
+        const fileName = path.basename(filePath);
+        const language = detectLanguage(fileName);
+        const pageId = await createFilePage(parentPageId, fileName, language);
+        pagesCreated++;
+
+        const absPath = path.join(absDir, filePath);
+        const { content, truncated } = readFileContent(absPath, localInfo.size);
+
+        await appendMetadataBlock(
+          pageId,
+          filePath,
+          formatBytes(localInfo.size),
+          truncated,
+          localInfo.hash,
+        );
+
+        const chunks = chunkFileContent(content);
+        await appendCodeBlocks(pageId, chunks, language || "plain text");
+
+        newFileEntries[filePath] = { pageId, hash: localInfo.hash, size: localInfo.size };
+        logger.debug(`  \u2713 ${filePath}`);
+      } catch (err: unknown) {
+        if (err instanceof logger.CancelledError) throw err;
+        const error = err instanceof Error ? err : new Error(String(err));
+        logger.error(`  \u2717 Failed: ${filePath} - ${error.message}`);
+        errors.push({ filePath, error });
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 4: Git context + root callout
+    // ---------------------------------------------------------------
+
+    let newGitContextPageId = manifest.gitContextPageId;
+
+    if (includeGit && gitContext) {
+      try {
+        logger.updateSpinner("Updating git context...");
+        if (manifest.gitContextPageId) {
+          try {
+            await deleteBlock(manifest.gitContextPageId);
+            pagesDeleted++;
+          } catch {
+            // Page may have been manually deleted — ignore
+          }
+        }
+        newGitContextPageId = await appendGitContextPage(existingRootPageId, gitContext);
+        pagesCreated++;
+        logger.debug("\u2713 Git context updated");
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(`Git context update failed (continuing): ${message}`);
+      }
+    }
+
+    // Update root callout
+    try {
+      const rootChildren = await listAllChildren(existingRootPageId);
+      const calloutBlock = rootChildren.find((b) => b.type === "callout");
+      if (calloutBlock) {
+        await deleteBlock(calloutBlock.id);
+        pagesDeleted++;
+      }
+      const ignorePatternsDisplay = getIgnorePatternsDisplay(absDir, options.ignore);
+      await appendRootCallout(
+        existingRootPageId,
+        absDir,
+        localFiles.size,
+        ignorePatternsDisplay,
+        gitContext?.currentBranch,
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(`Root callout update failed (continuing): ${message}`);
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 5: Write updated manifest
+    // ---------------------------------------------------------------
+
+    try {
+      const updatedManifest = buildManifest(
+        existingRootPageId,
+        newFileEntries,
+        dirPageIds,
+        newGitContextPageId,
+        manifest.createdAt,
+      );
+      await writeManifest(existingRootPageId, updatedManifest, manifestPageId);
+      logger.debug("Manifest updated");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(`Failed to write manifest (update still succeeded): ${message}`);
+    }
+
+    // ---------------------------------------------------------------
+    // Summary
+    // ---------------------------------------------------------------
+
+    const elapsedMs = Date.now() - startTime;
+    logger.stopCancellationListener();
+    logger.printUpdateSummary({
+      pagesCreated,
+      pagesDeleted,
+      totalTime: elapsedMs,
+      errors,
+      diff,
+      rootPageId: existingRootPageId,
+    });
+  } catch (err: unknown) {
+    logger.stopCancellationListener();
+    if (err instanceof logger.CancelledError) {
+      const elapsedMs = Date.now() - startTime;
+      logger.printUpdateSummary({
+        pagesCreated,
+        pagesDeleted,
+        totalTime: elapsedMs,
+        errors,
+        diff,
+        rootPageId: existingRootPageId,
+        wasCancelled: true,
+      });
+      return;
+    }
+    logger.failSpinner("Update failed");
+    handleTopLevelError(err);
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dry-run update
+// ---------------------------------------------------------------------------
+
+async function dryRunUpdate(
+  existingRootPageId: string,
+  tree: FileNode,
+  absDir: string,
+  options: UploadOptions,
+): Promise<void> {
+  // 1. Read manifest
+  logger.startSpinner("Reading manifest...");
+  const manifestResult = await readManifest(existingRootPageId);
+
+  if (!manifestResult) {
+    logger.warn("No manifest found. An incremental update cannot be previewed.");
+    logger.info("\n\u2139\uFE0F  A --replace (full re-upload) would be needed.");
+    return;
+  }
+
+  const { manifest } = manifestResult;
+
+  // 2. Compute local hashes
+  logger.updateSpinner("Computing file hashes...");
+  const localFiles = buildLocalFileMap(tree, absDir);
+  const localDirs = collectDirPaths(tree);
+
+  // 3. Diff
+  const diff = diffManifest(localFiles, localDirs, manifest);
+  logger.succeedSpinner("Diff computed");
+  logger.logDiffSummary(diff);
+
+  // 4. Early exit if nothing changed
+  if (
+    diff.added.length === 0 &&
+    diff.modified.length === 0 &&
+    diff.deleted.length === 0 &&
+    diff.addedDirs.length === 0 &&
+    diff.deletedDirs.length === 0
+  ) {
+    logger.success("\u2728 Everything is up to date!");
+    return;
+  }
+
+  // 5. Verbose file listing
+  if (options.verbose) {
+    console.log("");
+    for (const f of diff.added) {
+      console.log(`  + ${f}`);
+    }
+    for (const f of diff.modified) {
+      console.log(`  ~ ${f}`);
+    }
+    for (const f of diff.deleted) {
+      console.log(`  - ${f}`);
+    }
+    for (const d of diff.addedDirs) {
+      console.log(`  + ${d}/`);
+    }
+    for (const d of diff.deletedDirs) {
+      console.log(`  - ${d}/`);
+    }
+  }
+
+  logger.info("\n\u2139\uFE0F  Dry run complete. No changes were made.");
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
 
 interface UploadContext {
   errors: UploadError[];
