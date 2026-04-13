@@ -2,6 +2,10 @@
 
 A CLI tool that uploads your codebase to Notion as a hierarchy of pages — one page per file, with syntax-highlighted code blocks.
 
+## Why
+
+This tool was primarily built to give [Notion AI](https://www.notion.so/product/ai) your code's context. By uploading your code as Notion pages, you can ask Notion AI questions about your project — and potentially save IDE Agent tokens in the process.
+
 ## Features
 
 - Preserves directory structure as nested Notion pages
