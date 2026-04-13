@@ -85,9 +85,9 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
   }
 
   // Diffstat
-  if (ctx.recentActivity.diffstatLast10) {
-    blocks.push(heading3("Diffstat (Last 10 Commits)"));
-    blocks.push(codeBlock(ctx.recentActivity.diffstatLast10));
+  if (ctx.recentActivity.diffstatLast100) {
+    blocks.push(heading3("Diffstat (Last 100 Commits)"));
+    blocks.push(codeBlock(ctx.recentActivity.diffstatLast100));
   }
 
   // 3. Working Directory heading
@@ -212,6 +212,20 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
         const bodyLines = commit.body.split("\n").map((l) => `    ${l}`);
         commitLines.push(...bodyLines);
       }
+      if (commit.diffstat) {
+        // Indent each diffstat line
+        const diffstatLines = commit.diffstat.split("\n").map((l) => `    ${l}`);
+        commitLines.push(...diffstatLines);
+      }
+      if (commit.diffstat) {
+        // Add blank line after commits with diffstats for visual separation
+        commitLines.push("");
+      }
+    }
+
+    // Remove trailing blank line if present
+    while (commitLines.length > 0 && commitLines[commitLines.length - 1] === "") {
+      commitLines.pop();
     }
 
     if (commitLines.length > 0) {

@@ -75,6 +75,7 @@ export interface GitContext {
       email: string;
       subject: string;
       body?: string;
+      diffstat?: string;
     }>;
   }>;
   recentActivity: {
@@ -85,7 +86,7 @@ export interface GitContext {
       subject: string;
       branches: string;
     }>;
-    diffstatLast10: string;
+    diffstatLast100: string;
     hotFiles: Array<{ count: number; file: string }>;
     activeContributors: Array<{ commits: number; name: string }>;
   };

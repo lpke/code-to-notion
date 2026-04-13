@@ -197,6 +197,29 @@ export async function gatherGitContext(
       }
     }
 
+    // Get per-commit diffstats for up to the last 10 commits on this branch
+    if (commits.length > 0) {
+      const diffstatRaw = git(
+        ["log", branch.name, "--format=---DIFFSTAT_START---%h", "--stat", "-n", "10"],
+        absDir,
+      );
+
+      if (diffstatRaw) {
+        const chunks = diffstatRaw.split("---DIFFSTAT_START---").filter((c) => c.trim());
+        for (const chunk of chunks) {
+          const lines = chunk.split("\n");
+          const shortHash = lines[0].trim();
+          const diffstat = lines.slice(1).join("\n").trim();
+          if (shortHash && diffstat) {
+            const commit = commits.find((c) => c.shortHash === shortHash);
+            if (commit) {
+              commit.diffstat = diffstat;
+            }
+          }
+        }
+      }
+    }
+
     branches.push({
       name: branch.name,
       lastCommitDate: branch.lastCommitDate,
@@ -228,17 +251,17 @@ export async function gatherGitContext(
     }
   }
 
-  // Diffstat for the last 10 commits on the current branch
-  let diffstatLast10 = "";
+  // Diffstat for the last 100 commits on the current branch
+  let diffstatLast100 = "";
   // Check how many commits are available
   const commitCountStr = git(["rev-list", "--count", "HEAD"], absDir);
   const commitCount = commitCountStr ? parseInt(commitCountStr, 10) : 0;
   if (commitCount > 1) {
-    const diffRange = commitCount >= 10 ? "HEAD~10..HEAD" : `HEAD~${commitCount - 1}..HEAD`;
-    diffstatLast10 = git(["diff", "--stat", diffRange], absDir) || "";
+    const diffRange = commitCount >= 100 ? "HEAD~100..HEAD" : `HEAD~${commitCount - 1}..HEAD`;
+    diffstatLast100 = git(["diff", "--stat", diffRange], absDir) || "";
   } else if (commitCount === 1) {
     // Single commit — diff against the empty tree to show initial changes
-    diffstatLast10 = git(["diff", "--stat", "4b825dc642cb6eb9a060e54bf899d69f82cf7262", "HEAD"], absDir) || "";
+    diffstatLast100 = git(["diff", "--stat", "4b825dc642cb6eb9a060e54bf899d69f82cf7262", "HEAD"], absDir) || "";
   }
 
   // Files changed in the last 7 days (most frequently changed)
@@ -339,7 +362,7 @@ export async function gatherGitContext(
     branches,
     recentActivity: {
       commitsLast7Days,
-      diffstatLast10,
+      diffstatLast100,
       hotFiles,
       activeContributors,
     },

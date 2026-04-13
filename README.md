@@ -135,9 +135,9 @@ Files larger than 500KB are truncated with a warning.
 When the target directory is a git repository, `code-to-pages` automatically gathers comprehensive git metadata and creates a dedicated "🔀 Git Context" page at the root level of the project in Notion, alongside the file tree. This page appears before the file tree and includes:
 
 - **Repository info** — remote URLs, current/default branch, total commits, repo age
-- **Recent activity** — commits from the last 7 days, most frequently changed files, active contributors, diffstat
+- **Recent activity** — commits from the last 7 days, most frequently changed files, active contributors, diffstat of the last 100 commits
 - **Working directory status** — staged, unstaged, and untracked file counts, stash count
-- **Branch details** — each branch gets a toggleable section with its commit history
+- **Branch details** — each branch gets a toggleable section with its commit history, including per-commit diffstats for the 10 most recent commits
 - **Tags** — the 10 most recent tags
 
 **Branch limits:**
