@@ -14,6 +14,7 @@ program
   .name("code-to-notion")
   .description("Upload codebases to Notion pages")
   .version("1.0.0")
+  .showHelpAfterError(true)
   .argument("<dir>", "Target directory to upload")
   .option("--name <name>", "Override the project name (defaults to directory basename)")
   .option("--only <dirs...>", "Only include these subdirectories (relative to target dir)")
