@@ -61,8 +61,19 @@ export async function upload(
   let estimatedGitApiCalls = 0;
   const includeGit = !options.skipGitContext;
   if (includeGit) {
-    const branchEstimate = Math.min(dirCount > 0 ? 5 : 2, 10);
-    estimatedGitApiCalls = branchEstimate * 2 + 8;
+    // Fixed costs: 1 create page + 1 append top-level blocks + 1 list page children
+    // Per branch: 1 append commit blocks + 1 list branch children + N diffstat appends
+    // (where N = number of commits with diffstats, roughly all of them)
+    const branchEstimate = Math.min(dirCount > 0 ? 5 : 2, 20);
+    // Default branch gets 50 commits, others get 20
+    const defaultBranchCommits = 50;
+    const otherBranchCommits = 20;
+    const avgCommitsPerBranch = branchEstimate > 1
+      ? Math.round((defaultBranchCommits + (branchEstimate - 1) * otherBranchCommits) / branchEstimate)
+      : defaultBranchCommits;
+    // Per branch: 1 (append commits) + 1 (list children) + avgCommits (diffstats)
+    const perBranchCalls = 2 + avgCommitsPerBranch;
+    estimatedGitApiCalls = 3 + (branchEstimate * perBranchCalls);
   }
 
   const estimatedApiCalls = estimatedFileApiCalls + estimatedGitApiCalls;

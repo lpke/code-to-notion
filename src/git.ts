@@ -5,6 +5,8 @@ import type { GitContext } from "./types.js";
 import * as logger from "./logger.js";
 
 const BRANCH_LIMIT = 20;
+const DEFAULT_BRANCH_COMMIT_LIMIT = 50;
+const OTHER_BRANCH_COMMIT_LIMIT = 20;
 
 /**
  * Run a git command in the target directory. Returns stdout as a trimmed string.
@@ -148,8 +150,9 @@ export async function gatherGitContext(
   for (let branchIdx = 0; branchIdx < sortedBranches.length; branchIdx++) {
     const branch = sortedBranches[branchIdx];
     logger.debug(`    [${branchIdx + 1}/${sortedBranches.length}] ${branch.name}: fetching commits...`);
+    const isDefaultBranch = branch.name === defaultBranch;
     const isCurrentBranch = branch.name === currentBranch;
-    const commitLimit = 50;
+    const commitLimit = isDefaultBranch ? DEFAULT_BRANCH_COMMIT_LIMIT : OTHER_BRANCH_COMMIT_LIMIT;
 
     // Get total commit count for this branch (to detect truncation)
     const totalBranchCommitsStr = git(["rev-list", "--count", branch.gitRef], absDir);
@@ -214,8 +217,12 @@ export async function gatherGitContext(
       }
     }
 
-    logger.debug(`    [${branchIdx + 1}/${sortedBranches.length}] ${branch.name}: ${commits.length} commit(s), fetching diffstats...`);
-    // Get per-commit diffstats for up to the last 50 commits on this branch
+    const truncated = totalBranchCommits > commits.length;
+    const commitCountDisplay = truncated
+      ? `${commits.length} of ${totalBranchCommits} commits (truncated for performance)`
+      : `${commits.length} commit(s)`;
+    logger.debug(`    [${branchIdx + 1}/${sortedBranches.length}] ${branch.name}: ${commitCountDisplay}, fetching diffstats...`);
+    // Get per-commit diffstats for this branch
     if (commits.length > 0) {
       const diffstatRaw = git(
         ["log", branch.gitRef, "--format=---DIFFSTAT_START---%h", "--stat", "-n", String(commitLimit)],
@@ -246,6 +253,27 @@ export async function gatherGitContext(
       totalCommitCount: totalBranchCommits,
       commits,
     });
+  }
+
+  // --- De-duplicate commits across branches ---
+  // Commits that already appeared in full in an earlier branch are marked as
+  // deduplicated so the upload can render them as one-liners instead of full
+  // toggle blocks with body/diffstat.
+  logger.debug("  De-duplicating commits across branches...");
+  const seenCommitHashes = new Set<string>();
+  let totalDeduped = 0;
+  for (const branch of branches) {
+    for (const commit of branch.commits) {
+      if (seenCommitHashes.has(commit.hash)) {
+        commit.deduplicated = true;
+        totalDeduped++;
+      } else {
+        seenCommitHashes.add(commit.hash);
+      }
+    }
+  }
+  if (totalDeduped > 0) {
+    logger.debug(`  De-duplicated ${totalDeduped} commit(s) across branches`);
   }
 
   // --- 4. Recent Changes (Last 7 Days) ---

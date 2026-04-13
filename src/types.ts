@@ -77,6 +77,8 @@ export interface GitContext {
       subject: string;
       body?: string;
       diffstat?: string;
+      /** True if this commit was already shown in full in an earlier branch */
+      deduplicated?: boolean;
     }>;
   }>;
   recentActivity: {

@@ -187,32 +187,52 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
     }
     logger.debug(`    [${i + 1}/${ctx.branches.length}] ${branch.name}: ${branch.commits.length} commit(s)...`);
 
-    // First pass: build commit toggle blocks (with body code blocks as children,
-    // but WITHOUT diffstat sub-toggles to stay within Notion's 2-level nesting limit)
-    const commitToggleChildren: BlockObjectRequest[] = [];
-    for (const commit of branch.commits) {
-      const toggleText = `${commit.shortHash} | ${formatDate(commit.date)} | ${commit.author} | ${commit.subject}`;
-
-      // Children inside the commit toggle (level 2 relative to branch H3)
-      const innerChildren: BlockObjectRequest[] = [];
-      if (commit.body) {
-        innerChildren.push(codeBlock(commit.body));
-      }
-
-      commitToggleChildren.push({
-        type: "toggle",
-        toggle: {
-          rich_text: [{ type: "text", text: { content: toggleText }, annotations: { code: true, bold: false, italic: false, strikethrough: false, underline: false, color: "default" } }],
-          color: "default",
-          ...(innerChildren.length > 0 ? { children: innerChildren } : {}),
-        },
-      } as BlockObjectRequest);
+    // Separate full commits from deduplicated ones
+    const fullCommits = branch.commits.filter((c) => !c.deduplicated);
+    const dedupedCommits = branch.commits.filter((c) => c.deduplicated);
+    if (dedupedCommits.length > 0) {
+      logger.debug(`      ${dedupedCommits.length} commit(s) de-duplicated (shown as one-liners)`);
     }
 
-    // Append commit toggles in batches of 100 (Notion limit)
-    const commitBatches = Math.ceil(commitToggleChildren.length / 100);
-    for (let j = 0; j < commitToggleChildren.length; j += 100) {
-      const batch = commitToggleChildren.slice(j, j + 100);
+    // Build children: full commits as toggles, deduplicated as plain text paragraphs
+    const commitChildren: BlockObjectRequest[] = [];
+    for (const commit of branch.commits) {
+      const lineText = `${commit.shortHash} | ${formatDate(commit.date)} | ${commit.author} | ${commit.subject}`;
+
+      if (commit.deduplicated) {
+        // One-liner paragraph with a note that it's covered in another branch
+        commitChildren.push({
+          type: "paragraph",
+          paragraph: {
+            rich_text: [
+              { type: "text", text: { content: lineText }, annotations: { code: true, bold: false, italic: false, strikethrough: false, underline: false, color: "default" } },
+              { type: "text", text: { content: "  ↖ see earlier branch" }, annotations: { italic: true, bold: false, code: false, strikethrough: false, underline: false, color: "default" } },
+            ],
+            color: "default",
+          },
+        } as BlockObjectRequest);
+      } else {
+        // Full toggle with body
+        const innerChildren: BlockObjectRequest[] = [];
+        if (commit.body) {
+          innerChildren.push(codeBlock(commit.body));
+        }
+
+        commitChildren.push({
+          type: "toggle",
+          toggle: {
+            rich_text: [{ type: "text", text: { content: lineText }, annotations: { code: true, bold: false, italic: false, strikethrough: false, underline: false, color: "default" } }],
+            color: "default",
+            ...(innerChildren.length > 0 ? { children: innerChildren } : {}),
+          },
+        } as BlockObjectRequest);
+      }
+    }
+
+    // Append commit children in batches of 100 (Notion limit)
+    const commitBatches = Math.ceil(commitChildren.length / 100);
+    for (let j = 0; j < commitChildren.length; j += 100) {
+      const batch = commitChildren.slice(j, j + 100);
       if (commitBatches > 1) {
         logger.debug(`      Sending commit batch ${Math.floor(j / 100) + 1}/${commitBatches} (${batch.length} commits)...`);
       }
@@ -225,10 +245,22 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
     }
 
     // Second pass: fetch the newly created commit toggle block IDs,
-    // then append diffstat sub-toggles into each commit toggle that has a diffstat
+    // then append diffstat sub-toggles into each commit toggle that has a diffstat.
+    // Only full (non-deduplicated) commits get diffstats.
+    // Build a mapping: for each non-deduplicated commit, track its index among
+    // toggle blocks (since deduplicated commits are paragraphs, not toggles).
+    let toggleIndex = 0;
+    const commitToggleIndexMap = new Map<number, number>(); // branch.commits idx -> toggle idx
+    for (let ci = 0; ci < branch.commits.length; ci++) {
+      if (!branch.commits[ci].deduplicated) {
+        commitToggleIndexMap.set(ci, toggleIndex);
+        toggleIndex++;
+      }
+    }
+
     const commitsWithDiffstat = branch.commits
       .map((commit, idx) => ({ commit, idx }))
-      .filter(({ commit }) => !!commit.diffstat);
+      .filter(({ commit }) => !!commit.diffstat && !commit.deduplicated);
 
     if (commitsWithDiffstat.length === 0) {
       logger.debug(`      No diffstats for ${branch.name}`);
@@ -250,8 +282,9 @@ const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
     );
 
     for (const { commit, idx } of commitsWithDiffstat) {
-      if (idx >= commitBlocks.length) break;
-      const commitBlockId = commitBlocks[idx].id;
+      const tIdx = commitToggleIndexMap.get(idx);
+      if (tIdx === undefined || tIdx >= commitBlocks.length) break;
+      const commitBlockId = commitBlocks[tIdx].id;
 
       const diffstatToggle: BlockObjectRequest = {
         type: "toggle",
