@@ -24,6 +24,15 @@ function git(args: string[], cwd: string): string | null {
   }
 }
 
+/** Normalize git --stat output: each line has a leading space; strip it for consistency. */
+function normalizeDiffstat(raw: string): string {
+  return raw
+    .split("\n")
+    .map((line) => line.replace(/^ /, ""))
+    .join("\n")
+    .trim();
+}
+
 /**
  * Gather comprehensive git context from a target directory.
  * Returns null if the directory is not a git repo.
@@ -206,7 +215,7 @@ export async function gatherGitContext(
         for (const chunk of chunks) {
           const lines = chunk.split("\n");
           const shortHash = lines[0].trim();
-          const diffstat = lines.slice(1).join("\n").trim();
+          const diffstat = normalizeDiffstat(lines.slice(1).join("\n"));
           if (shortHash && diffstat) {
             const commit = commits.find((c) => c.shortHash === shortHash);
             if (commit) {
@@ -255,10 +264,10 @@ export async function gatherGitContext(
   const commitCount = commitCountStr ? parseInt(commitCountStr, 10) : 0;
   if (commitCount > 1) {
     const diffRange = commitCount >= 20 ? "HEAD~20..HEAD" : `HEAD~${commitCount - 1}..HEAD`;
-    diffstatLast20 = git(["diff", "--stat", diffRange], absDir) || "";
+    diffstatLast20 = normalizeDiffstat(git(["diff", "--stat", diffRange], absDir) || "");
   } else if (commitCount === 1) {
     // Single commit — diff against the empty tree to show initial changes
-    diffstatLast20 = git(["diff", "--stat", "4b825dc642cb6eb9a060e54bf899d69f82cf7262", "HEAD"], absDir) || "";
+    diffstatLast20 = normalizeDiffstat(git(["diff", "--stat", "4b825dc642cb6eb9a060e54bf899d69f82cf7262", "HEAD"], absDir) || "");
   }
 
   // Files changed in the last 7 days (most frequently changed)
