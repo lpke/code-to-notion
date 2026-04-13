@@ -53,7 +53,7 @@ export async function gatherGitContext(
   }
 
   // --- 1. Repository Info ---
-  logger.debug("  Gathering repository info...");
+  logger.debug("   Gathering repository info...");
   const remotes = parseRemotes(git(["remote", "-v"], absDir));
   const currentBranch = git(["branch", "--show-current"], absDir) || "HEAD";
   const defaultBranch = detectDefaultBranch(absDir);
@@ -62,10 +62,10 @@ export async function gatherGitContext(
   const repoAge =
     git(["log", "--reverse", "--format=%aI"], absDir)?.split("\n")[0] || "unknown";
   const lastCommitDate = git(["log", "-1", "--format=%aI"], absDir) || "unknown";
-  logger.debug(`  Repository: ${currentBranch} branch, ${totalCommits} total commits`);
+  logger.debug(`   Repository: ${currentBranch} branch, ${totalCommits} total commits`);
 
   // --- 2. Branch Management ---
-  logger.debug("  Enumerating branches...");
+  logger.debug("   Enumerating branches...");
   const localBranchesRaw = git(
     ["branch", "--format=%(refname:short)|%(committerdate:iso-strict)|%(objectname:short)"],
     absDir,
@@ -144,12 +144,12 @@ export async function gatherGitContext(
   }
 
   // --- 3. Commit History Per Branch ---
-  logger.debug(`  Gathering commit history for ${sortedBranches.length} branch(es)...`);
+  logger.debug(`   Gathering commit history for ${sortedBranches.length} branch(es)...`);
   const branches: GitContext["branches"] = [];
 
   for (let branchIdx = 0; branchIdx < sortedBranches.length; branchIdx++) {
     const branch = sortedBranches[branchIdx];
-    logger.debug(`    [${branchIdx + 1}/${sortedBranches.length}] ${branch.name}: fetching commits...`);
+    logger.debug(`      [${branchIdx + 1}/${sortedBranches.length}] ${branch.name}: fetching commits...`);
     const isDefaultBranch = branch.name === defaultBranch;
     const isCurrentBranch = branch.name === currentBranch;
     const commitLimit = isDefaultBranch ? DEFAULT_BRANCH_COMMIT_LIMIT : OTHER_BRANCH_COMMIT_LIMIT;
@@ -221,7 +221,7 @@ export async function gatherGitContext(
     const commitCountDisplay = truncated
       ? `${commits.length} of ${totalBranchCommits} commits (truncated for performance)`
       : `${commits.length} commit(s)`;
-    logger.debug(`    [${branchIdx + 1}/${sortedBranches.length}] ${branch.name}: ${commitCountDisplay}, fetching diffstats...`);
+    logger.debug(`      [${branchIdx + 1}/${sortedBranches.length}] ${branch.name}: ${commitCountDisplay}, fetching diffstats...`);
     // Get per-commit diffstats for this branch
     if (commits.length > 0) {
       const diffstatRaw = git(
@@ -259,7 +259,7 @@ export async function gatherGitContext(
   // Commits that already appeared in full in an earlier branch are marked as
   // deduplicated so the upload can render them as one-liners instead of full
   // toggle blocks with body/diffstat.
-  logger.debug("  De-duplicating commits across branches...");
+  logger.debug("   De-duplicating commits across branches...");
   const seenCommitHashes = new Set<string>();
   let totalDeduped = 0;
   for (const branch of branches) {
@@ -273,11 +273,11 @@ export async function gatherGitContext(
     }
   }
   if (totalDeduped > 0) {
-    logger.debug(`  De-duplicated ${totalDeduped} commit(s) across branches`);
+    logger.debug(`   De-duplicated ${totalDeduped} commit(s) across branches`);
   }
 
   // --- 4. Recent Changes (Last 14 Days) ---
-  logger.debug("  Gathering recent activity...");
+  logger.debug("   Gathering recent activity...");
   const recentCommitsRaw = git(
     ["log", "--all", "--after=14 days ago", "--format=%h|%aI|%an|%s|%D", "--date=iso-strict"],
     absDir,
@@ -343,7 +343,7 @@ export async function gatherGitContext(
   }
 
   // --- 5. Tags ---
-  logger.debug("  Gathering tags...");
+  logger.debug("   Gathering tags...");
   const TAG_LIMIT = 10;
   const tagsRaw = git(
     ["tag", "--sort=-creatordate", "--format=%(refname:short)|%(creatordate:iso-strict)|%(subject)"],

@@ -157,14 +157,19 @@ export function stopSpinner(): void {
 export function printProgress(
   current: number,
   total: number,
-  filePath: string,
+  description: string,
 ): void {
-  const text = chalk.cyan(`[${current}/${total}]`) + ` Uploading ${filePath}`;
+  const text = chalk.cyan(`[${current}/${total}]`) + ` ${description}`;
   if (currentSpinner) {
     currentSpinner.text = text;
   } else {
     startSpinner(text);
   }
+}
+
+/** Pad a label+colon to a consistent column width for summary boxes. */
+function padLabel(label: string): string {
+  return (label + ":").padEnd(18);
 }
 
 export function printSummary(opts: {
@@ -189,19 +194,21 @@ export function printSummary(opts: {
     console.log(chalk.green.bold(" ✓ Upload complete!"));
     console.log(chalk.green("═".repeat(50)));
   }
-  console.log(`  ${chalk.cyan("Pages created:")} ${opts.totalPages}`);
-  console.log(`  ${chalk.cyan("Time elapsed:")}  ${timeStr}s`);
+  console.log(`  ${chalk.cyan(padLabel("Pages created"))}${opts.totalPages}`);
+  console.log(`  ${chalk.cyan(padLabel("Time elapsed"))}${timeStr}s`);
 
   if (opts.errors.length > 0) {
     console.log(
-      `  ${chalk.red("Errors:")}         ${opts.errors.length} file(s) failed`,
+      `  ${chalk.red(padLabel("Errors"))}${opts.errors.length} file(s) failed`,
     );
     for (const err of opts.errors) {
       console.log(chalk.red(`    ✗ ${err.filePath}: ${err.error.message}`));
     }
+  } else {
+    console.log(`  ${chalk.cyan(padLabel("Errors"))}${chalk.dim("0")}`);
   }
 
-  console.log(`  ${chalk.cyan("Notion page:")}   ${notionUrl}`);
+  console.log(`  ${chalk.cyan(padLabel("Notion page"))}${notionUrl}`);
   const borderColor = opts.wasCancelled ? chalk.yellow : chalk.green;
   console.log(borderColor("═".repeat(50)));
   console.log("");
@@ -298,42 +305,32 @@ export function printUpdateSummary(opts: {
     console.log(chalk.green("═".repeat(50)));
   }
 
-  if (opts.diff.added.length > 0) {
-    console.log(`  ${chalk.green("Files added:")}     ${opts.diff.added.length}`);
-  }
-  if (opts.diff.modified.length > 0) {
-    console.log(`  ${chalk.yellow("Files modified:")}  ${opts.diff.modified.length}`);
-  }
-  if (opts.diff.deleted.length > 0) {
-    console.log(`  ${chalk.red("Files deleted:")}   ${opts.diff.deleted.length}`);
-  }
-  if (opts.diff.unchanged.length > 0) {
-    console.log(`  ${chalk.dim("Files unchanged:")} ${opts.diff.unchanged.length}`);
-  }
-  if (opts.diff.addedDirs.length > 0) {
-    console.log(`  ${chalk.green("Dirs added:")}      ${opts.diff.addedDirs.length}`);
-  }
-  if (opts.diff.deletedDirs.length > 0) {
-    console.log(`  ${chalk.red("Dirs deleted:")}    ${opts.diff.deletedDirs.length}`);
-  }
+  // File stats — always shown
+  console.log(`  ${chalk.green(padLabel("Files added"))}${opts.diff.added.length}`);
+  console.log(`  ${chalk.yellow(padLabel("Files modified"))}${opts.diff.modified.length}`);
+  console.log(`  ${chalk.red(padLabel("Files deleted"))}${opts.diff.deleted.length}`);
+  console.log(`  ${chalk.dim(padLabel("Files unchanged"))}${opts.diff.unchanged.length}`);
+  console.log(`  ${chalk.green(padLabel("Dirs added"))}${opts.diff.addedDirs.length}`);
+  console.log(`  ${chalk.red(padLabel("Dirs deleted"))}${opts.diff.deletedDirs.length}`);
 
-  console.log(`  ${chalk.cyan("Pages created:")} ${opts.pagesCreated}`);
-  if (opts.pagesUpdated && opts.pagesUpdated > 0) {
-    console.log(`  ${chalk.cyan("Pages updated:")} ${opts.pagesUpdated}`);
-  }
-  console.log(`  ${chalk.cyan("Pages deleted:")} ${opts.pagesDeleted}`);
-  console.log(`  ${chalk.cyan("Time elapsed:")}  ${timeStr}s`);
+  // Page stats
+  console.log(`  ${chalk.cyan(padLabel("Pages created"))}${opts.pagesCreated}`);
+  console.log(`  ${chalk.cyan(padLabel("Pages updated"))}${opts.pagesUpdated ?? 0}`);
+  console.log(`  ${chalk.cyan(padLabel("Pages deleted"))}${opts.pagesDeleted}`);
+  console.log(`  ${chalk.cyan(padLabel("Time elapsed"))}${timeStr}s`);
 
   if (opts.errors.length > 0) {
     console.log(
-      `  ${chalk.red("Errors:")}         ${opts.errors.length} file(s) failed`,
+      `  ${chalk.red(padLabel("Errors"))}${opts.errors.length} file(s) failed`,
     );
     for (const err of opts.errors) {
       console.log(chalk.red(`    ✗ ${err.filePath}: ${err.error.message}`));
     }
+  } else {
+    console.log(`  ${chalk.cyan(padLabel("Errors"))}${chalk.dim("0")}`);
   }
 
-  console.log(`  ${chalk.cyan("Notion page:")}   ${notionUrl}`);
+  console.log(`  ${chalk.cyan(padLabel("Notion page"))}${notionUrl}`);
   const borderColor = opts.wasCancelled ? chalk.yellow : chalk.green;
   console.log(borderColor("═".repeat(50)));
   console.log("");

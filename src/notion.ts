@@ -51,9 +51,9 @@ export async function appendGitContextPage(
   ctx: GitContext,
 ): Promise<{ pageId: string; blockMap: GitContextBlockMap }> {
   // Create the child page
-  logger.debug("  Creating git context page...");
+  logger.debug("   Creating git context child page...");
   const pageId = await createNotionPage(parentPageId, "Git Context", "\u{1F500}");
-  logger.debug("  Git context page created");
+  logger.debug("   Git context page created");
 
   const blockMap = await populateGitContextPage(pageId, ctx);
 
@@ -118,7 +118,7 @@ async function populateBranchCommits(
 
   const dedupedCommits = branch.commits.filter((c) => c.deduplicated);
   if (dedupedCommits.length > 0) {
-    logger.debug(`      ${dedupedCommits.length} commit(s) de-duplicated (shown as one-liners)`);
+    logger.debug(`         ${dedupedCommits.length} commit(s) de-duplicated (shown as one-liners)`);
   }
 
   // Keep newest-first order from git (no reversal)
@@ -181,7 +181,7 @@ async function populateBranchCommits(
   for (let j = 0; j < commitChildren.length; j += 100) {
     const batch = commitChildren.slice(j, j + 100);
     if (commitBatches > 1) {
-      logger.debug(`      Sending commit batch ${Math.floor(j / 100) + 1}/${commitBatches} (${batch.length} commits)...`);
+      logger.debug(`         Sending commit batch ${Math.floor(j / 100) + 1}/${commitBatches} (${batch.length} commits)...`);
     }
     const response = await rateLimiter.schedule(() =>
       notionClient.blocks.children.append({
@@ -213,6 +213,7 @@ export async function populateGitContextPage(
   const blocks: BlockObjectRequest[] = [];
 
   // 1. Summary callout
+  logger.info("   Writing summary callout...");
   const summaryRichText = buildGitSummaryRichText(ctx);
   blocks.push({
     type: "callout",
@@ -224,6 +225,7 @@ export async function populateGitContextPage(
   });
 
   // 2. Recent Activity heading (h1, smart start date)
+  logger.info("   Writing recent activity...");
   const smartStartDate = ctx.recentActivity.oldestActivityDate
     && ctx.recentActivity.oldestActivityDate > ctx.dateBoundaries.recentActivityStart
     ? ctx.recentActivity.oldestActivityDate
@@ -245,6 +247,7 @@ export async function populateGitContextPage(
 
   // Recently Changed Files (h2)
   if (ctx.recentActivity.hotFiles.length > 0) {
+    logger.info("   Writing recently changed files...");
     blocks.push(heading2("Recently Changed Files"));
     const hotLines = ctx.recentActivity.hotFiles.map(
       (f) => `${f.count} changes | ${f.file}`,
@@ -254,6 +257,7 @@ export async function populateGitContextPage(
 
   // Recent Contributors (h2)
   if (ctx.recentActivity.activeContributors.length > 0) {
+    logger.info("   Writing contributors...");
     blocks.push(heading2("Recent Contributors"));
     const contribLines = ctx.recentActivity.activeContributors.map(
       (c) => `${c.commits} commits | ${c.name}`,
@@ -262,6 +266,7 @@ export async function populateGitContextPage(
   }
 
   // 4. Branches heading (h1)
+  logger.info(`   Writing branch history (${ctx.branches.length} branches)...`);
   blocks.push(heading1("Branches"));
 
   // Build toggleable heading blocks for each branch (h2 with date mention)
@@ -280,6 +285,7 @@ export async function populateGitContextPage(
   // 5. Tags heading (only if tags exist)
   const tagBlocks: BlockObjectRequest[] = [];
   if (ctx.tags.length > 0) {
+    logger.info("   Writing tags...");
     const tagHeader = ctx.totalTagCount > ctx.tags.length
       ? `Tags (showing ${ctx.tags.length} of ${ctx.totalTagCount})`
       : "Tags";
@@ -292,14 +298,14 @@ export async function populateGitContextPage(
 
   // --- Append all top-level blocks in batches ---
   const allTopLevel = [...blocks, ...branchToggleBlocks, ...tagBlocks];
-  logger.debug(`  Appending ${allTopLevel.length} top-level blocks (${Math.ceil(allTopLevel.length / 100)} batch(es))...`);
+  logger.debug(`   Appending ${allTopLevel.length} top-level blocks (${Math.ceil(allTopLevel.length / 100)} batch(es))...`);
 
   for (let i = 0; i < allTopLevel.length; i += 100) {
     const batch = allTopLevel.slice(i, i + 100);
     const batchNum = Math.floor(i / 100) + 1;
     const totalBatches = Math.ceil(allTopLevel.length / 100);
     if (totalBatches > 1) {
-      logger.debug(`    Sending top-level block batch ${batchNum}/${totalBatches} (${batch.length} blocks)...`);
+      logger.debug(`      Sending top-level block batch ${batchNum}/${totalBatches} (${batch.length} blocks)...`);
     }
     await rateLimiter.schedule(() =>
       notionClient.blocks.children.append({
@@ -310,7 +316,7 @@ export async function populateGitContextPage(
   }
 
   // --- Fetch all page children to build the block map ---
-  logger.debug("  Fetching page children to resolve block IDs...");
+  logger.debug("   Fetching page children to resolve block IDs...");
   const allChildren = await listAllChildren(pageId);
 
   // --- Build the GitContextBlockMap by walking children in order ---
@@ -397,16 +403,16 @@ export async function populateGitContextPage(
   }
 
   // --- Populate branch commits and record in block map ---
-  logger.debug(`  Uploading commit history for ${ctx.branches.length} branch(es)...`);
+  logger.debug(`   Uploading commit history for ${ctx.branches.length} branch(es)...`);
   for (let i = 0; i < ctx.branches.length && i < toggleBlocks.length; i++) {
     const branch = ctx.branches[i];
     const toggleBlockId = toggleBlocks[i].id;
     let anchorId: string | undefined;
 
     if (branch.commits.length === 0) {
-      logger.debug(`    [${i + 1}/${ctx.branches.length}] ${branch.name}: no commits, skipping`);
+      logger.debug(`      [${i + 1}/${ctx.branches.length}] ${branch.name}: no commits, skipping`);
     } else {
-      logger.debug(`    [${i + 1}/${ctx.branches.length}] ${branch.name}: ${branch.commits.length} commit(s)...`);
+      logger.debug(`      [${i + 1}/${ctx.branches.length}] ${branch.name}: ${branch.commits.length} commit(s)...`);
       anchorId = await populateBranchCommits(toggleBlockId, branch);
     }
 
@@ -438,6 +444,7 @@ export async function updateGitContextPage(
   };
 
   // Step 1: Update summary callout
+  logger.info("   Updating summary callout...");
   const summaryRichText = buildGitSummaryRichText(ctx);
   await updateBlock(existingBlockMap.calloutId, {
     callout: {
@@ -448,6 +455,7 @@ export async function updateGitContextPage(
   });
 
   // Step 2: Update recent activity section
+  logger.info("   Updating recent activity...");
   const smartStartDate = ctx.recentActivity.oldestActivityDate
     && ctx.recentActivity.oldestActivityDate > ctx.dateBoundaries.recentActivityStart
     ? ctx.recentActivity.oldestActivityDate
@@ -543,13 +551,21 @@ export async function updateGitContextPage(
   let lastSectionBlockId = existingBlockMap.recentActivityCodeId;
 
   // Hot files
-  const hotFilesContent = ctx.recentActivity.hotFiles.length > 0
+  const hasHotFiles = ctx.recentActivity.hotFiles.length > 0;
+  const hotFilesContent = hasHotFiles
     ? ctx.recentActivity.hotFiles.map((f) => `${f.count} changes | ${f.file}`).join("\n")
     : "";
+  if (existingBlockMap.hotFilesHeadingId && hasHotFiles) {
+    logger.info("   Updating recently changed files...");
+  } else if (existingBlockMap.hotFilesHeadingId && !hasHotFiles) {
+    logger.info("   Removing recently changed files (no data)...");
+  } else if (!existingBlockMap.hotFilesHeadingId && hasHotFiles) {
+    logger.info("   Adding recently changed files...");
+  }
   const hotResult = await updateOptionalSection(
     existingBlockMap.hotFilesHeadingId,
     existingBlockMap.hotFilesCodeId,
-    ctx.recentActivity.hotFiles.length > 0,
+    hasHotFiles,
     "Recently Changed Files",
     hotFilesContent,
     lastSectionBlockId,
@@ -559,13 +575,21 @@ export async function updateGitContextPage(
   if (hotResult.codeId) lastSectionBlockId = hotResult.codeId;
 
   // Contributors
-  const contribContent = ctx.recentActivity.activeContributors.length > 0
+  const hasContribs = ctx.recentActivity.activeContributors.length > 0;
+  const contribContent = hasContribs
     ? ctx.recentActivity.activeContributors.map((c) => `${c.commits} commits | ${c.name}`).join("\n")
     : "";
+  if (existingBlockMap.contributorsHeadingId && hasContribs) {
+    logger.info("   Updating contributors...");
+  } else if (existingBlockMap.contributorsHeadingId && !hasContribs) {
+    logger.info("   Removing contributors (no data)...");
+  } else if (!existingBlockMap.contributorsHeadingId && hasContribs) {
+    logger.info("   Adding contributors...");
+  }
   const contribResult = await updateOptionalSection(
     existingBlockMap.contributorsHeadingId,
     existingBlockMap.contributorsCodeId,
-    ctx.recentActivity.activeContributors.length > 0,
+    hasContribs,
     "Recent Contributors",
     contribContent,
     lastSectionBlockId,
@@ -581,29 +605,30 @@ export async function updateGitContextPage(
         await deleteBlock((existingBlockMap as any).diffstatCodeId);
       }
       await deleteBlock((existingBlockMap as any).diffstatHeadingId);
-      logger.debug("  Cleaned up stale diffstat blocks from old layout");
+      logger.debug("      Cleaned up stale diffstat blocks");
     } catch {
-      logger.debug("  Could not clean up stale diffstat blocks (may already be removed)");
+      logger.debug("      Could not clean up stale diffstat blocks (may already be removed)");
     }
   }
 
   // Step 4: Update branches
+  logger.info(`   Updating branches (${ctx.branches.length})...`);
   const existingBranchNames = new Set(Object.keys(existingBlockMap.branches));
   const currentBranchNames = new Set(ctx.branches.map((b) => b.name));
 
   // Update or skip existing branches
   for (const [branchName, entry] of Object.entries(existingBlockMap.branches)) {
     if (!currentBranchNames.has(branchName)) {
-      // Branch deleted \u2014 remove toggle
-      logger.debug(`  Deleting removed branch toggle: ${branchName}`);
+      // Branch deleted — remove toggle
+      logger.debug(`      ${branchName}: deleted, removing`);
       await deleteBlock(entry.toggleId);
       continue;
     }
 
     const branch = ctx.branches.find((b) => b.name === branchName)!;
     if (entry.lastCommitHash === branch.lastCommitHash) {
-      // Unchanged \u2014 update heading to new format (h2 with date mention) but skip commits
-      logger.debug(`  Skipping branch ${branchName} (unchanged)`);
+      // Unchanged — update heading to new format (h2 with date mention) but skip commits
+      logger.debug(`      ${branchName}: unchanged, skipping`);
       await updateBlock(entry.toggleId, {
         heading_2: {
           rich_text: buildBranchToggleRichText(branch) as any,
@@ -614,7 +639,7 @@ export async function updateGitContextPage(
       newBlockMap.branches[branchName] = entry;
     } else {
       // Changed — incremental append
-      logger.debug(`  Updating branch ${branchName} (changed)...`);
+      logger.debug(`      ${branchName}: changed, updating...`);
 
       // Update heading to new format (h2 with date mention)
       await updateBlock(entry.toggleId, {
@@ -627,7 +652,7 @@ export async function updateGitContextPage(
 
       // Migration: old manifests lack anchorBlockId — do a full rewrite to establish one
       if (!entry.anchorBlockId) {
-        logger.debug(`    No anchor block for ${branchName} (old manifest), full rewrite`);
+        logger.debug(`      ${branchName}: no anchor (old manifest), full rewrite`);
         const toggleChildren = await listAllChildren(entry.toggleId);
         for (const child of toggleChildren) {
           await deleteBlock(child.id);
@@ -649,7 +674,7 @@ export async function updateGitContextPage(
 
       if (newCommitIndex === -1) {
         // lastCommitHash not found — force push or rebase, fall back to full rewrite
-        logger.debug(`    Force push/rebase detected for ${branchName} (hash ${lastKnownHash} not found), full rewrite`);
+        logger.debug(`      ${branchName}: force push/rebase detected, full rewrite (${branch.commits.length} commits)`);
         const toggleChildren = await listAllChildren(entry.toggleId);
         for (const child of toggleChildren) {
           await deleteBlock(child.id);
@@ -671,6 +696,7 @@ export async function updateGitContextPage(
         } else {
           // newCommits are already newest-first from the git log slice.
           // Pass entry.anchorBlockId so they're inserted after the anchor (before existing commits).
+          logger.debug(`      ${branchName}: ${newCommits.length} new commit(s), appending`);
           const tempBranch = { ...branch, commits: newCommits };
           await populateBranchCommits(entry.toggleId, tempBranch, entry.anchorBlockId);
 
@@ -687,7 +713,7 @@ export async function updateGitContextPage(
   // Add new branches
   for (const branch of ctx.branches) {
     if (existingBranchNames.has(branch.name)) continue;
-    logger.debug(`  Adding new branch toggle: ${branch.name}`);
+    logger.debug(`      ${branch.name}: new branch, creating (${branch.commits.length} commits)`);
 
     const response = await rateLimiter.schedule(() =>
       notionClient.blocks.children.append({
@@ -722,6 +748,7 @@ export async function updateGitContextPage(
   const tagContent = ctx.tags.map((t) => `${t.name} | ${formatDate(t.date)} | ${t.subject}`).join("\n");
 
   if (existingBlockMap.tagsHeadingId && existingBlockMap.tagsCodeId && hasNewTags) {
+    logger.info("   Updating tags...");
     await updateBlock(existingBlockMap.tagsHeadingId, {
       heading_2: { rich_text: [{ type: "text", text: { content: tagHeader } }], color: "default" },
     });
@@ -731,9 +758,11 @@ export async function updateGitContextPage(
     newBlockMap.tagsHeadingId = existingBlockMap.tagsHeadingId;
     newBlockMap.tagsCodeId = existingBlockMap.tagsCodeId;
   } else if (existingBlockMap.tagsHeadingId && existingBlockMap.tagsCodeId && !hasNewTags) {
+    logger.info("   Removing tags...");
     await deleteBlock(existingBlockMap.tagsCodeId);
     await deleteBlock(existingBlockMap.tagsHeadingId);
   } else if (!existingBlockMap.tagsHeadingId && hasNewTags) {
+    logger.info("   Adding tags...");
     // Append at end of page
     const response = await rateLimiter.schedule(() =>
       notionClient.blocks.children.append({

@@ -191,7 +191,8 @@ export async function upload(
   const estimatedApiCalls = estimatedFileApiCalls + estimatedGitApiCalls;
 
   // Step 2: Print summary
-  logger.info(`\n\uD83D\uDCCA Summary:`);
+  logger.info("");
+  logger.info("\uD83D\uDCCA Summary:");
   logger.info(`   Directories: ${dirCount}`);
   logger.info(`   Files:       ${fileCount}`);
   if (includeGit) {
@@ -201,15 +202,19 @@ export async function upload(
   }
 
   if (fileCount === 0) {
-    logger.warn("\nNo files found after filtering. Nothing to upload.");
+    logger.info("");
+    logger.warn("No files found after filtering. Nothing to upload.");
     return;
   }
 
   // Step 3: Dry run without --update/--replace — print tree and exit
   if (options.dryRun && !options.update && !options.replace) {
-    logger.info("\n\uD83C\uDF33 File tree (dry run):\n");
+    logger.info("");
+    logger.info("\uD83C\uDF33 File tree (dry run):");
+    logger.info("");
     logger.printTree(tree);
-    logger.info("\n\u2139\uFE0F  Dry run complete. No API calls were made.");
+    logger.info("");
+    logger.info("\u2139\uFE0F  Dry run complete. No API calls were made.");
     return;
   }
 
@@ -219,20 +224,24 @@ export async function upload(
   // Step 5: Detect existing project
   // NOTE: findChildPageByTitle returns the first match. If multiple pages share
   // the same name, only the first is detected. Use --name to disambiguate.
-  logger.info("\n\uD83D\uDD0E Checking for existing upload...");
+  logger.info("");
+  logger.info("\uD83D\uDD0E Checking for existing upload...");
   const existingPageId = await findChildPageByTitle(
     config.notionCodebasesPageId,
     projectName,
   );
 
   if (!existingPageId) {
-    logger.info("No existing upload found. Starting fresh upload.");
+    logger.info("   No existing upload found. Starting fresh upload.");
     // No existing project — fresh upload
     if (options.dryRun) {
       // --dry-run with --update/--replace but nothing exists
-      logger.info("\n\uD83C\uDF33 File tree (dry run):\n");
+      logger.info("");
+      logger.info("\uD83C\uDF33 File tree (dry run):");
+      logger.info("");
       logger.printTree(tree);
-      logger.info("\n\u2139\uFE0F  No existing project found. A fresh upload would be performed.");
+      logger.info("");
+      logger.info("\u2139\uFE0F  No existing project found. A fresh upload would be performed.");
       return;
     }
     await freshUpload(projectName, tree, absDir, options, config);
@@ -240,7 +249,7 @@ export async function upload(
   }
 
   // Step 6: Existing project found — determine action
-  logger.info(`Found existing '${projectName}' page`);
+  logger.info(`   Found existing '${projectName}' page`);
   let action: 'update' | 'replace' | 'new' | 'cancel';
   if (options.update) {
     action = 'update';
@@ -259,21 +268,28 @@ export async function upload(
 
     case 'replace':
       if (options.dryRun) {
-        logger.info("\n\uD83C\uDF33 File tree (dry run):\n");
+        logger.info("");
+        logger.info("\uD83C\uDF33 File tree (dry run):");
+        logger.info("");
         logger.printTree(tree);
-        logger.info("\n\u2139\uFE0F  Dry run: existing page would be deleted and a fresh upload performed.");
+        logger.info("");
+        logger.info("\u2139\uFE0F  Dry run: existing page would be deleted and a fresh upload performed.");
         return;
       }
-      logger.info("\n\uD83D\uDDD1\uFE0F  Replacing existing page...");
+      logger.info("");
+      logger.info("\uD83D\uDDD1\uFE0F  Replacing existing page...");
       await deleteBlock(existingPageId);
       await freshUpload(projectName, tree, absDir, options, config);
       return;
 
     case 'new':
       if (options.dryRun) {
-        logger.info("\n\uD83C\uDF33 File tree (dry run):\n");
+        logger.info("");
+        logger.info("\uD83C\uDF33 File tree (dry run):");
+        logger.info("");
         logger.printTree(tree);
-        logger.info("\n\u2139\uFE0F  Dry run: a new page would be created alongside the existing one.");
+        logger.info("");
+        logger.info("\u2139\uFE0F  Dry run: a new page would be created alongside the existing one.");
         return;
       }
       await freshUpload(projectName, tree, absDir, options, config);
@@ -363,7 +379,7 @@ async function freshUpload(
         gitContextBlocks = result.blockMap;
         pagesCreated++;
         childOrder["."].push("__gitcontext__");
-        logger.debug("\u2713 Git context uploaded");
+        logger.debug("   \u2713 Git context uploaded");
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         logger.warn(`Git context upload failed (continuing with upload): ${message}`);
@@ -391,7 +407,8 @@ async function freshUpload(
 
     // Write manifest
     try {
-      logger.debug("Writing manifest...");
+      logger.info("");
+      logger.info("   Writing manifest...");
       const manifest = buildManifest(
         rootPageId,
         manifestBuilder.files,
@@ -405,7 +422,7 @@ async function freshUpload(
       await writeManifest(rootPageId, manifest);
       childOrder["."].push("__manifest__");
       pagesCreated++;
-      logger.debug("Manifest written");
+      logger.success("   \u2713 Manifest written");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn(`Failed to write manifest (upload still succeeded): ${message}`);
@@ -467,13 +484,13 @@ async function updateExisting(
   }
 
   const { manifest, manifestPageId } = manifestResult;
-  logger.debug(`Manifest loaded: ${Object.keys(manifest.files).length} file(s), ${Object.keys(manifest.directories).length} directory(ies)`);
+  logger.debug(`   Manifest loaded: ${Object.keys(manifest.files).length} file(s), ${Object.keys(manifest.directories).length} directory(ies)`);
 
   // 2. Compute local hashes
   logger.updateSpinner("Computing file hashes...");
   const localFiles = buildLocalFileMap(tree, absDir);
   const localDirs = collectDirPaths(tree);
-  logger.debug(`Computing file hashes for ${localFiles.size} file(s)...`);
+  logger.debug(`   Computing file hashes for ${localFiles.size} file(s)...`);
 
   // 3. Gather git context (local-only, no API calls)
   let gitContext: Awaited<ReturnType<typeof gatherGitContext>> = null;
@@ -492,11 +509,11 @@ async function updateExisting(
   logger.logDiffSummary(diff);
 
   // Verbose: list each changed file
-  for (const f of diff.added) logger.debug(`  + ${f}`);
-  for (const f of diff.modified) logger.debug(`  ~ ${f}`);
-  for (const f of diff.deleted) logger.debug(`  - ${f}`);
-  for (const d of diff.addedDirs) logger.debug(`  + ${d}/`);
-  for (const d of diff.deletedDirs) logger.debug(`  - ${d}/`);
+  for (const f of diff.added) logger.debug(`      + ${f}`);
+  for (const f of diff.modified) logger.debug(`      ~ ${f}`);
+  for (const f of diff.deleted) logger.debug(`      - ${f}`);
+  for (const d of diff.addedDirs) logger.debug(`      + ${d}/`);
+  for (const d of diff.deletedDirs) logger.debug(`      - ${d}/`);
 
   // 5. Early exit if nothing changed
   if (
@@ -525,7 +542,8 @@ async function updateExisting(
 
     const totalDeletions = diff.deleted.length + diff.deletedDirs.length;
     if (totalDeletions > 0) {
-      logger.debug(`Phase 1: Deleting ${diff.deleted.length} removed file(s) and ${diff.deletedDirs.length} removed directory(ies)...`);
+      logger.debug("");
+      logger.debug(`   Phase 1: Deleting ${diff.deleted.length} file(s) and ${diff.deletedDirs.length} dir(s)...`);
     }
 
     // Delete removed file pages
@@ -534,10 +552,10 @@ async function updateExisting(
       const entry = manifest.files[filePath];
       if (entry) {
         try {
-          logger.debug(`Deleting removed: ${filePath}`);
+          logger.debug(`      Deleting: ${filePath}`);
           await deleteBlock(entry.pageId);
           pagesDeleted++;
-          logger.debug(`  Deleted: ${filePath}`);
+          logger.debug(`      \u2713 ${filePath}`);
         } catch {
           logger.warn(`Could not delete page for removed file: ${filePath} (may have been manually removed)`);
         }
@@ -550,10 +568,10 @@ async function updateExisting(
       const entry = manifest.directories[dirPath];
       if (entry) {
         try {
-          logger.debug(`Deleting removed dir: ${dirPath}`);
+          logger.debug(`      Deleting: ${dirPath}`);
           await deleteBlock(entry.pageId);
           pagesDeleted++;
-          logger.debug(`  Deleted: ${dirPath}/`);
+          logger.debug(`      \u2713 ${dirPath}/`);
         } catch {
           logger.warn(`Could not delete page for removed dir: ${dirPath} (may have been manually removed)`);
         }
@@ -590,7 +608,8 @@ async function updateExisting(
 
     // Create new directories (sorted top-down by diffManifest)
     if (diff.addedDirs.length > 0) {
-      logger.debug(`Phase 2: Creating ${diff.addedDirs.length} new directory(ies)...`);
+      logger.debug("");
+      logger.debug(`   Phase 2: Creating ${diff.addedDirs.length} directory(ies)...`);
     }
     for (const dirPath of diff.addedDirs) {
       logger.throwIfCancelled();
@@ -606,7 +625,7 @@ async function updateExisting(
       }
 
       try {
-        logger.debug(`Creating dir: ${dirPath}`);
+        logger.debug(`      Creating dir: ${dirPath}`);
         const afterBlockId = findInsertionAfterBlockId(parentDir, dirPath, true, manifest);
         const pageId = await createDirectoryPage(parentPageId, path.basename(dirPath), afterBlockId);
         dirPageIds[dirPath] = { pageId };
@@ -621,7 +640,7 @@ async function updateExisting(
           workingChildOrder[dirPath] = [];
         }
 
-        logger.debug(`  Created dir: ${dirPath}`);
+        logger.debug(`      \u2713 ${dirPath}/`);
       } catch (err: unknown) {
         if (err instanceof logger.CancelledError) throw err;
         const error = err instanceof Error ? err : new Error(String(err));
@@ -671,11 +690,11 @@ async function updateExisting(
 
         newFileEntries[filePath] = { pageId: existingPageId, hash: localInfo.hash, size: localInfo.size };
         pagesUpdated++;
-        logger.debug(`  \u2713 ${filePath} (updated in-place)`);
+        logger.debug(`      \u2713 ${filePath} (updated in-place)`);
       } catch (err: unknown) {
         if (err instanceof logger.CancelledError) throw err;
         const error = err instanceof Error ? err : new Error(String(err));
-        logger.error(`  \u2717 Failed: ${filePath} - ${error.message}`);
+        logger.error(`      \u2717 Failed: ${filePath} - ${error.message}`);
         errors.push({ filePath, error });
       }
     }
@@ -732,11 +751,11 @@ async function updateExisting(
         // Update working child order
         insertIntoChildOrder(workingChildOrder, parentDir, filePath, false, manifest);
 
-        logger.debug(`  \u2713 ${filePath}`);
+        logger.debug(`      \u2713 ${filePath} (created)`);
       } catch (err: unknown) {
         if (err instanceof logger.CancelledError) throw err;
         const error = err instanceof Error ? err : new Error(String(err));
-        logger.error(`  \u2717 Failed: ${filePath} - ${error.message}`);
+        logger.error(`      \u2717 Failed: ${filePath} - ${error.message}`);
         errors.push({ filePath, error });
       }
     }
@@ -745,10 +764,19 @@ async function updateExisting(
     // Phase 4: Root callout + Git context
     // ---------------------------------------------------------------
 
+    // Stop the file operations spinner before phase transitions
+    const totalFileOps = diff.modified.length + diff.added.length;
+    if (totalFileOps > 0) {
+      logger.succeedSpinner(`${totalFileOps} file(s) updated`);
+    } else {
+      logger.stopSpinner();
+    }
+
     let newCalloutBlockId = manifest.calloutBlockId;
 
+    logger.info("");
+    logger.info("   Updating root callout...");
     try {
-      logger.debug("Updating root callout...");
       const ignorePatternsDisplay = getIgnorePatternsDisplay(absDir, options.ignore);
       const calloutRichText = buildRootCalloutRichText(
         absDir, localFiles.size, ignorePatternsDisplay, gitContext?.currentBranch
@@ -763,7 +791,7 @@ async function updateExisting(
             color: "blue_background",
           },
         });
-        logger.debug("\u2713 Root callout updated in-place");
+        logger.debug("      \u2713 Root callout updated in-place");
       } else {
         // Fallback for old manifests: find callout by listing children
         const rootChildren = await listAllChildren(existingRootPageId);
@@ -777,14 +805,15 @@ async function updateExisting(
             },
           });
           newCalloutBlockId = calloutBlock.id;
-          logger.debug("\u2713 Root callout updated in-place (found via fallback)");
+          logger.debug("      \u2713 Root callout updated in-place (found via fallback)");
         } else {
           newCalloutBlockId = await appendRootCallout(
             existingRootPageId, absDir, localFiles.size, ignorePatternsDisplay, gitContext?.currentBranch
           );
-          logger.debug("\u2713 Root callout created (none found)");
+          logger.debug("      \u2713 Root callout created (none found)");
         }
       }
+      logger.success("   \u2713 Root callout updated");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn(`Root callout update failed (continuing): ${message}`);
@@ -797,27 +826,30 @@ async function updateExisting(
       try {
         if (manifest.gitContextPageId && manifest.gitContextBlocks) {
           // TIER 1: Incremental update with section-level diffing
-          logger.updateSpinner("Updating git context page...");
+          logger.info("");
+          logger.info("\uD83D\uDD00 Updating git context...");
           newGitContextBlocks = await updateGitContextPage(
             manifest.gitContextPageId,
             gitContext,
             manifest.gitContextBlocks,
           );
-          logger.debug("\u2713 Git context updated incrementally");
+          logger.success("   \u2713 Git context updated");
         } else if (manifest.gitContextPageId) {
           // TIER 2: Has page but no block map — clear + rewrite (Chunk 1 fallback)
-          logger.updateSpinner("Updating git context page...");
+          logger.info("");
+          logger.info("\uD83D\uDD00 Rewriting git context page (no block map)...");
           await clearPageContent(manifest.gitContextPageId);
           newGitContextBlocks = await populateGitContextPage(manifest.gitContextPageId, gitContext);
-          logger.debug("\u2713 Git context page rewritten in-place");
+          logger.success("   \u2713 Git context updated");
         } else {
           // TIER 3: No existing page — create from scratch
-          logger.updateSpinner("Creating git context page...");
+          logger.info("");
+          logger.info("\uD83D\uDD00 Creating git context page...");
           const result = await appendGitContextPage(existingRootPageId, gitContext);
           newGitContextPageId = result.pageId;
           newGitContextBlocks = result.blockMap;
           pagesCreated++;
-          logger.debug("\u2713 Git context page created");
+          logger.success("   \u2713 Git context updated");
         }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
@@ -830,7 +862,8 @@ async function updateExisting(
     // ---------------------------------------------------------------
 
     try {
-      logger.debug("Writing updated manifest...");
+      logger.info("");
+      logger.info("   Writing manifest...");
       const updatedManifest = buildManifest(
         existingRootPageId,
         newFileEntries,
@@ -842,7 +875,7 @@ async function updateExisting(
         workingChildOrder,
       );
       await writeManifest(existingRootPageId, updatedManifest, manifestPageId);
-      logger.debug("Manifest updated");
+      logger.success("   \u2713 Manifest updated");
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn(`Failed to write manifest (update still succeeded): ${message}`);
@@ -901,7 +934,8 @@ async function dryRunUpdate(
 
   if (!manifestResult) {
     logger.warn("No manifest found. An incremental update cannot be previewed.");
-    logger.info("\n\u2139\uFE0F  A --replace (full re-upload) would be needed.");
+    logger.info("");
+    logger.info("\u2139\uFE0F  A --replace (full re-upload) would be needed.");
     return;
   }
 
@@ -933,23 +967,24 @@ async function dryRunUpdate(
   if (options.verbose) {
     console.log("");
     for (const f of diff.added) {
-      console.log(`  + ${f}`);
+      console.log(`      + ${f}`);
     }
     for (const f of diff.modified) {
-      console.log(`  ~ ${f}`);
+      console.log(`      ~ ${f}`);
     }
     for (const f of diff.deleted) {
-      console.log(`  - ${f}`);
+      console.log(`      - ${f}`);
     }
     for (const d of diff.addedDirs) {
-      console.log(`  + ${d}/`);
+      console.log(`      + ${d}/`);
     }
     for (const d of diff.deletedDirs) {
-      console.log(`  - ${d}/`);
+      console.log(`      - ${d}/`);
     }
   }
 
-  logger.info("\n\u2139\uFE0F  Dry run complete. No changes were made.");
+  logger.info("");
+  logger.info("\u2139\uFE0F  Dry run complete. No changes were made.");
 }
 
 // ---------------------------------------------------------------------------
@@ -1023,7 +1058,7 @@ async function uploadFile(
   ctx: UploadContext,
 ): Promise<void> {
   const currentFile = ctx.filesUploaded() + 1;
-  logger.printProgress(currentFile, ctx.totalFiles, node.path);
+  logger.printProgress(currentFile, ctx.totalFiles, `Uploading ${node.path}`);
 
   const absPath = path.join(absRoot, node.path);
 
@@ -1066,7 +1101,7 @@ async function uploadFile(
       ctx.childOrder[ctx.parentPath].push(node.path);
 
       ctx.incrementFiles();
-      logger.debug(`  \u2713 ${node.path}`);
+      logger.debug(`      \u2713 ${node.path}`);
       return; // Success
     } catch (err: unknown) {
       if (err instanceof logger.CancelledError) throw err;
@@ -1074,7 +1109,7 @@ async function uploadFile(
 
       if (attempt < MAX_RETRIES) {
         logger.warn(
-          `  Retry ${attempt}/${MAX_RETRIES} for ${node.path}: ${error.message}`,
+          `      Retry ${attempt}/${MAX_RETRIES} for ${node.path}: ${error.message}`,
         );
         // Brief pause before retry
         await sleep(1000 * attempt);
@@ -1082,7 +1117,7 @@ async function uploadFile(
       }
 
       // Final attempt failed
-      logger.error(`  \u2717 Failed after ${MAX_RETRIES} retries: ${node.path}`);
+      logger.error(`      \u2717 Failed after ${MAX_RETRIES} retries: ${node.path}`);
       ctx.errors.push({ filePath: node.path, error });
     }
   }
