@@ -141,6 +141,7 @@ export function buildManifest(
   existingCreatedAt?: string,
   calloutBlockId?: string,
   gitContextBlocks?: GitContextBlockMap,
+  childOrder?: Record<string, string[]>,
 ): Manifest {
   const now = new Date().toISOString();
   return {
@@ -153,5 +154,6 @@ export function buildManifest(
     ...(gitContextBlocks ? { gitContextBlocks } : {}),
     files,
     directories,
+    ...(childOrder ? { childOrder } : {}),
   };
 }

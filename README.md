@@ -66,7 +66,7 @@ On each upload, a `.manifest` page is created under the project root that tracks
 
 On subsequent runs, if a page with the same project name already exists, the CLI will prompt you to choose:
 
-1. **Update existing** — reads the manifest, computes local file hashes, and only uploads files that were added or modified. Deleted files are removed from Notion. Unchanged files are skipped entirely.
+1. **Update existing** — reads the manifest, computes local file hashes, and only uploads files that were added or modified. Deleted files are removed from Notion. Unchanged files are skipped entirely. Modified files are updated in-place — the file page stays at its original position, only the content is refreshed. New files and directories are inserted at the correct alphabetical position, not appended at the end.
 2. **Replace existing** — deletes the existing page and does a full fresh upload.
 3. **Create new** — uploads alongside the existing page (original behaviour).
 4. **Cancel** — exits without making changes.
@@ -87,6 +87,8 @@ For git repos, a **🔀 Git Context** page is created alongside your code contai
 - **Branch history** — per-branch commits with full messages and diffstats (50 for default branch, 20 for others). Commits shared across branches are de-duplicated. Repos with 20+ branches are trimmed to the most recently active.
 - **Recent activity** — last 7 days of commits, hot files, active contributors
 - **Tags** — 10 most recent with dates and annotations
+
+Time-period headings include the actual date range as interactive Notion date mentions. Timestamps in the summary callout and file metadata are rendered as Notion date mentions — timezone-aware and future-proof. The git context page is updated incrementally during `--update` — only changed branches are rebuilt, dramatically reducing API calls.
 
 Disable with `--skip-git-context`.
 

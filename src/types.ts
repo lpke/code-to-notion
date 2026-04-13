@@ -99,6 +99,13 @@ export interface GitContext {
   totalTagCount: number;
   branchLimitApplied: boolean;
   totalBranchCount: number;
+  /** Computed date boundaries for time-period headings */
+  dateBoundaries: {
+    recentActivityStart: string; // ISO date, 7 days before gather time
+    recentActivityEnd: string;   // ISO date, gather time
+    contributorStart: string;    // ISO date, 30 days before gather time
+    contributorEnd: string;      // ISO date, gather time
+  };
 }
 
 
@@ -146,6 +153,12 @@ export interface Manifest {
   gitContextBlocks?: GitContextBlockMap;
   files: Record<string, ManifestFileEntry>;
   directories: Record<string, ManifestDirEntry>;
+  /** Ordered child identifiers per parent, for insertion positioning during updates.
+   *  Keys: parent paths ("." for root, "src" for src directory).
+   *  Values: ordered lists of child identifiers.
+   *  Special keys: "__callout__", "__gitcontext__", "__manifest__" for root page blocks.
+   */
+  childOrder?: Record<string, string[]>;
 }
 
 /** Diff between local file state and the remote manifest */

@@ -8,6 +8,30 @@ import * as logger from "./logger.js";
 let notionClient: Client;
 let rateLimiter: RateLimiter;
 
+// --- Date mention helpers ---
+
+/** Create a single-date mention rich text element */
+function dateMention(isoDate: string): Record<string, unknown> {
+  return {
+    type: "mention" as const,
+    mention: {
+      type: "date" as const,
+      date: { start: isoDate, end: null },
+    },
+  };
+}
+
+/** Create a date-range mention rich text element */
+function dateRangeMention(startDate: string, endDate: string): Record<string, unknown> {
+  return {
+    type: "mention" as const,
+    mention: {
+      type: "date" as const,
+      date: { start: startDate, end: endDate },
+    },
+  };
+}
+
 /** Initialise the Notion client and rate limiter */
 export function initNotion(apiToken: string, concurrency: number): void {
   notionClient = new Client({
@@ -37,9 +61,10 @@ export async function appendGitContextPage(
 }
 
 /**
- * Build the summary callout text for the git context page.
+ * Build the summary callout rich text for the git context page.
+ * Uses date mentions for repo age dates.
  */
-function buildGitSummaryText(ctx: GitContext): string {
+function buildGitSummaryRichText(ctx: GitContext): Array<Record<string, unknown>> {
   const primaryRemote = ctx.remotes.length > 0 ? ctx.remotes[0].url : "(none)";
   const branchNote = ctx.branchLimitApplied
     ? ` (showing ${ctx.branches.length} of ${ctx.totalBranchCount})`
@@ -47,15 +72,13 @@ function buildGitSummaryText(ctx: GitContext): string {
   const tagNote = ctx.totalTagCount > ctx.tags.length
     ? ` (showing ${ctx.tags.length} of ${ctx.totalTagCount})`
     : "";
-  return (
-    `Remote: ${primaryRemote}\n` +
-    `Current branch: ${ctx.currentBranch}\n` +
-    `Default branch: ${ctx.defaultBranch}\n` +
-    `Total commits: ${ctx.totalCommits}\n` +
-    `Repo age: ${formatDate(ctx.repoAge)} \u2192 ${formatDate(ctx.lastCommitDate)}\n` +
-    `Branches: ${ctx.totalBranchCount}${branchNote}\n` +
-    `Tags: ${ctx.totalTagCount}${tagNote}`
-  );
+  return [
+    { type: "text", text: { content: `Remote: ${primaryRemote}\nCurrent branch: ${ctx.currentBranch}\nDefault branch: ${ctx.defaultBranch}\nTotal commits: ${ctx.totalCommits}\nRepo age: ` } },
+    dateMention(ctx.repoAge),
+    { type: "text", text: { content: " \u2192 " } },
+    dateMention(ctx.lastCommitDate),
+    { type: "text", text: { content: `\nBranches: ${ctx.totalBranchCount}${branchNote}\nTags: ${ctx.totalTagCount}${tagNote}` } },
+  ];
 }
 
 /**
@@ -193,18 +216,18 @@ export async function populateGitContextPage(
   const blocks: BlockObjectRequest[] = [];
 
   // 1. Summary callout
-  const summaryText = buildGitSummaryText(ctx);
+  const summaryRichText = buildGitSummaryRichText(ctx);
   blocks.push({
     type: "callout",
     callout: {
-      rich_text: [{ type: "text", text: { content: summaryText } }],
+      rich_text: summaryRichText as any,
       icon: { type: "emoji", emoji: "\u{1F500}" },
       color: "blue_background",
     },
   });
 
   // 2. Recent Activity heading
-  blocks.push(heading2("Recent Activity (Last 7 Days)"));
+  blocks.push(heading2WithDateRange("Recent Activity", ctx.dateBoundaries.recentActivityStart, ctx.dateBoundaries.recentActivityEnd));
 
   if (ctx.recentActivity.commitsLast7Days.length > 0) {
     const recentLines = ctx.recentActivity.commitsLast7Days.map((c) => {
@@ -218,7 +241,7 @@ export async function populateGitContextPage(
 
   // Most Changed Files
   if (ctx.recentActivity.hotFiles.length > 0) {
-    blocks.push(heading3("Most Changed Files"));
+    blocks.push(heading3WithDateRange("Most Changed Files", ctx.dateBoundaries.recentActivityStart, ctx.dateBoundaries.recentActivityEnd));
     const hotLines = ctx.recentActivity.hotFiles.map(
       (f) => `${f.count} changes | ${f.file}`,
     );
@@ -227,7 +250,7 @@ export async function populateGitContextPage(
 
   // Active Contributors
   if (ctx.recentActivity.activeContributors.length > 0) {
-    blocks.push(heading3("Active Contributors (Last 30 Days)"));
+    blocks.push(heading3WithDateRange("Active Contributors", ctx.dateBoundaries.contributorStart, ctx.dateBoundaries.contributorEnd));
     const contribLines = ctx.recentActivity.activeContributors.map(
       (c) => `${c.commits} commits | ${c.name}`,
     );
@@ -415,10 +438,10 @@ export async function updateGitContextPage(
   };
 
   // Step 1: Update summary callout
-  const summaryText = buildGitSummaryText(ctx);
+  const summaryRichText = buildGitSummaryRichText(ctx);
   await updateBlock(existingBlockMap.calloutId, {
     callout: {
-      rich_text: [{ type: "text", text: { content: summaryText } }],
+      rich_text: summaryRichText as any,
       icon: { type: "emoji", emoji: "\u{1F500}" },
       color: "blue_background",
     },
@@ -427,7 +450,11 @@ export async function updateGitContextPage(
   // Step 2: Update recent activity section
   await updateBlock(existingBlockMap.recentActivityHeadingId, {
     heading_2: {
-      rich_text: [{ type: "text", text: { content: "Recent Activity (Last 7 Days)" } }],
+      rich_text: [
+        { type: "text", text: { content: "Recent Activity (" } },
+        dateRangeMention(ctx.dateBoundaries.recentActivityStart, ctx.dateBoundaries.recentActivityEnd),
+        { type: "text", text: { content: ")" } },
+      ] as any,
       color: "default",
     },
   });
@@ -454,11 +481,15 @@ export async function updateGitContextPage(
     headingText: string,
     codeContent: string,
     afterBlockId: string,
+    headingRichText?: Array<Record<string, unknown>>,
   ): Promise<{ headingId?: string; codeId?: string }> => {
+    const richTextForHeading = headingRichText
+      ? headingRichText as any
+      : [{ type: "text", text: { content: headingText } }];
     if (existingHeadingId && existingCodeId && hasData) {
       // Update both
       await updateBlock(existingHeadingId, {
-        heading_3: { rich_text: [{ type: "text", text: { content: headingText } }], color: "default" },
+        heading_3: { rich_text: richTextForHeading, color: "default" },
       });
       await updateBlock(existingCodeId, {
         code: { rich_text: chunkedRichText(codeContent), language: "plain text" },
@@ -471,10 +502,13 @@ export async function updateGitContextPage(
       return {};
     } else if (!existingHeadingId && hasData) {
       // Create new heading + code after afterBlockId
+      const newHeadingBlock: BlockObjectRequest = headingRichText
+        ? { type: "heading_3", heading_3: { rich_text: headingRichText as any, color: "default" } }
+        : heading3(headingText);
       const response = await rateLimiter.schedule(() =>
         notionClient.blocks.children.append({
           block_id: pageId,
-          children: [heading3(headingText), codeBlock(codeContent)],
+          children: [newHeadingBlock, codeBlock(codeContent)],
           after: afterBlockId,
         }),
       );
@@ -500,6 +534,11 @@ export async function updateGitContextPage(
     "Most Changed Files",
     hotFilesContent,
     lastSectionBlockId,
+    [
+      { type: "text", text: { content: "Most Changed Files (" } },
+      dateRangeMention(ctx.dateBoundaries.recentActivityStart, ctx.dateBoundaries.recentActivityEnd),
+      { type: "text", text: { content: ")" } },
+    ],
   );
   newBlockMap.hotFilesHeadingId = hotResult.headingId;
   newBlockMap.hotFilesCodeId = hotResult.codeId;
@@ -513,9 +552,14 @@ export async function updateGitContextPage(
     existingBlockMap.contributorsHeadingId,
     existingBlockMap.contributorsCodeId,
     ctx.recentActivity.activeContributors.length > 0,
-    "Active Contributors (Last 30 Days)",
+    "Active Contributors",
     contribContent,
     lastSectionBlockId,
+    [
+      { type: "text", text: { content: "Active Contributors (" } },
+      dateRangeMention(ctx.dateBoundaries.contributorStart, ctx.dateBoundaries.contributorEnd),
+      { type: "text", text: { content: ")" } },
+    ],
   );
   newBlockMap.contributorsHeadingId = contribResult.headingId;
   newBlockMap.contributorsCodeId = contribResult.codeId;
@@ -673,6 +717,36 @@ function heading3(text: string): BlockObjectRequest {
   };
 }
 
+/** Create a heading_2 block with a date range mention */
+function heading2WithDateRange(prefix: string, startDate: string, endDate: string): BlockObjectRequest {
+  return {
+    type: "heading_2",
+    heading_2: {
+      rich_text: [
+        { type: "text", text: { content: `${prefix} (` } },
+        dateRangeMention(startDate, endDate) as any,
+        { type: "text", text: { content: ")" } },
+      ],
+      color: "default",
+    },
+  };
+}
+
+/** Create a heading_3 block with a date range mention */
+function heading3WithDateRange(prefix: string, startDate: string, endDate: string): BlockObjectRequest {
+  return {
+    type: "heading_3",
+    heading_3: {
+      rich_text: [
+        { type: "text", text: { content: `${prefix} (` } },
+        dateRangeMention(startDate, endDate) as any,
+        { type: "text", text: { content: ")" } },
+      ],
+      color: "default",
+    },
+  };
+}
+
 /** Create a code block (plain text) */
 function codeBlock(content: string): BlockObjectRequest {
   return {
@@ -768,13 +842,50 @@ export async function createNotionPage(
 }
 
 /**
+ * Create a child page at a specific position under a parent.
+ * Uses blocks.children.append with position parameter + pages.update for icon.
+ * Falls back to createNotionPage if no afterBlockId is provided.
+ */
+export async function createChildPageAtPosition(
+  parentId: string,
+  title: string,
+  icon?: string,
+  afterBlockId?: string,
+): Promise<string> {
+  if (!afterBlockId) {
+    return createNotionPage(parentId, title, icon);
+  }
+
+  const response = await rateLimiter.schedule(() =>
+    notionClient.blocks.children.append({
+      block_id: parentId,
+      children: [{ type: "child_page", child_page: { title } }] as any,
+      after: afterBlockId,
+    }),
+  );
+  const pageId = (response.results[0] as { id: string }).id;
+
+  if (icon) {
+    await rateLimiter.schedule(() =>
+      notionClient.pages.update({
+        page_id: pageId,
+        icon: { type: "emoji", emoji: icon as any },
+      }),
+    );
+  }
+
+  return pageId;
+}
+
+/**
  * Create a child page for a directory.
  */
 export async function createDirectoryPage(
   parentId: string,
   dirName: string,
+  afterBlockId?: string,
 ): Promise<string> {
-  return createNotionPage(parentId, dirName, "\uD83D\uDCC1");
+  return createChildPageAtPosition(parentId, dirName, "\uD83D\uDCC1", afterBlockId);
 }
 
 /**
@@ -784,9 +895,10 @@ export async function createFilePage(
   parentId: string,
   fileName: string,
   language?: string,
+  afterBlockId?: string,
 ): Promise<string> {
   const icon = getFileIcon(language);
-  return createNotionPage(parentId, fileName, icon);
+  return createChildPageAtPosition(parentId, fileName, icon, afterBlockId);
 }
 
 /**
@@ -834,23 +946,22 @@ export async function appendMetadataBlock(
   truncated: boolean,
   hash?: string,
 ): Promise<void> {
-  const timestamp = new Date().toISOString();
-  let text = `\uD83D\uDCC2 ${filePath}\n\uD83D\uDCCA ${fileSize}`;
-
+  const richText: Array<Record<string, unknown>> = [
+    { type: "text", text: { content: `\uD83D\uDCC2 ${filePath}\n\uD83D\uDCCA ${fileSize}` } },
+  ];
   if (hash) {
-    text += `\n\uD83D\uDD11 ${hash}`;
+    richText.push({ type: "text", text: { content: `\n\uD83D\uDD11 ${hash}` } });
   }
-
-  text += `\n\uD83D\uDD52 ${timestamp}`;
-
+  richText.push({ type: "text", text: { content: "\n\uD83D\uDD52 " } });
+  richText.push(dateMention(new Date().toISOString()));
   if (truncated) {
-    text += "\n\u26A0\uFE0F File was truncated to 500KB for upload";
+    richText.push({ type: "text", text: { content: "\n\u26A0\uFE0F File was truncated to 500KB for upload" } });
   }
 
   const block: BlockObjectRequest = {
     type: "callout",
     callout: {
-      rich_text: [{ type: "text", text: { content: text } }],
+      rich_text: richText as any,
       icon: { type: "emoji", emoji: "\u2139\uFE0F" },
       color: "gray_background",
     },
@@ -865,24 +976,24 @@ export async function appendMetadataBlock(
 }
 
 /**
- * Build the text content for the root callout block.
+ * Build the rich text content for the root callout block.
+ * Uses a date mention for the uploaded timestamp.
  */
-export function buildRootCalloutText(
+export function buildRootCalloutRichText(
   sourceDir: string,
   fileCount: number,
   ignoredPatterns: string[],
   gitBranch?: string,
-): string {
-  const timestamp = new Date().toISOString();
-  let text = `\uD83D\uDCC2 Source: ${sourceDir}\n`;
+): Array<Record<string, unknown>> {
+  const parts: Array<Record<string, unknown>> = [];
+  parts.push({ type: "text", text: { content: `\uD83D\uDCC2 Source: ${sourceDir}\n` } });
   if (gitBranch) {
-    text += `\uD83D\uDD00 Git branch: ${gitBranch}\n`;
+    parts.push({ type: "text", text: { content: `\uD83D\uDD00 Git branch: ${gitBranch}\n` } });
   }
-  text +=
-    `\uD83D\uDCCA Files: ${fileCount}\n` +
-    `\uD83D\uDD52 Uploaded: ${timestamp}\n` +
-    `\uD83D\uDEAB Ignored: ${ignoredPatterns.join(", ")}`;
-  return text;
+  parts.push({ type: "text", text: { content: `\uD83D\uDCCA Files: ${fileCount}\n\uD83D\uDD52 Uploaded: ` } });
+  parts.push(dateMention(new Date().toISOString()));
+  parts.push({ type: "text", text: { content: `\n\uD83D\uDEAB Ignored: ${ignoredPatterns.join(", ")}` } });
+  return parts;
 }
 
 /**
@@ -896,12 +1007,12 @@ export async function appendRootCallout(
   ignoredPatterns: string[],
   gitBranch?: string,
 ): Promise<string> {
-  const text = buildRootCalloutText(sourceDir, fileCount, ignoredPatterns, gitBranch);
+  const richText = buildRootCalloutRichText(sourceDir, fileCount, ignoredPatterns, gitBranch);
 
   const block: BlockObjectRequest = {
     type: "callout",
     callout: {
-      rich_text: [{ type: "text", text: { content: text } }],
+      rich_text: richText as any,
       icon: { type: "emoji", emoji: "\uD83D\uDCE6" },
       color: "blue_background",
     },

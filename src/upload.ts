@@ -4,7 +4,7 @@ import {
   APIErrorCode,
   isNotionClientError,
 } from "@notionhq/client";
-import type { FileNode, UploadOptions, UploadError, ManifestBuilder, ManifestDiff, ManifestFileEntry, ManifestDirEntry, GitContextBlockMap } from "./types.js";
+import type { FileNode, UploadOptions, UploadError, ManifestBuilder, ManifestDiff, ManifestFileEntry, ManifestDirEntry, GitContextBlockMap, Manifest } from "./types.js";
 import {
   buildFileTree,
   countNodes,
@@ -22,7 +22,7 @@ import {
   appendCodeBlocks,
   appendMetadataBlock,
   appendRootCallout,
-  buildRootCalloutText,
+  buildRootCalloutRichText,
   appendGitContextPage,
   populateGitContextPage,
   updateGitContextPage,
@@ -41,6 +41,110 @@ import { promptExistingAction } from "./prompt.js";
 import type { Config } from "./types.js";
 
 const MAX_RETRIES = 3;
+
+// ---------------------------------------------------------------------------
+// Ordered insertion helpers
+// ---------------------------------------------------------------------------
+
+/** Resolve a childOrder key to its Notion block ID */
+function resolveBlockId(key: string, manifest: Manifest): string | undefined {
+  if (key === "__callout__") return manifest.calloutBlockId;
+  if (key === "__gitcontext__") return manifest.gitContextPageId;
+  if (key === "__manifest__") return undefined;
+  if (manifest.files[key]) return manifest.files[key].pageId;
+  if (manifest.directories[key]) return manifest.directories[key].pageId;
+  return undefined;
+}
+
+/**
+ * Determine the block ID to insert after for a new file or directory.
+ * Directories come before files; both sorted alphabetically within their group.
+ */
+function findInsertionAfterBlockId(
+  parentPath: string,
+  newPath: string,
+  isDirectory: boolean,
+  manifest: Manifest,
+): string | undefined {
+  const order = manifest.childOrder?.[parentPath];
+  if (!order) return undefined;
+
+  // Separate entries into categories
+  const specials = order.filter(e => e.startsWith("__"));
+  const existingDirs = order.filter(e => !e.startsWith("__") && manifest.directories[e]);
+  const existingFiles = order.filter(e => !e.startsWith("__") && manifest.files[e]);
+
+  // Build desired sorted list with the new entry included
+  let targetList: string[];
+  if (isDirectory) {
+    targetList = [...existingDirs, newPath].sort((a, b) =>
+      path.basename(a).localeCompare(path.basename(b))
+    );
+  } else {
+    targetList = [...existingFiles, newPath].sort((a, b) =>
+      path.basename(a).localeCompare(path.basename(b))
+    );
+  }
+
+  const newIndex = targetList.indexOf(newPath);
+
+  if (isDirectory) {
+    // Directories go after specials, before files
+    if (newIndex === 0) {
+      // Should be first directory. Insert after last special, or undefined if no specials.
+      const lastSpecial = specials[specials.length - 1];
+      return lastSpecial ? resolveBlockId(lastSpecial, manifest) : undefined;
+    }
+    const predecessorPath = targetList[newIndex - 1];
+    return resolveBlockId(predecessorPath, manifest);
+  } else {
+    // Files go after directories
+    if (newIndex === 0) {
+      // Should be first file. Insert after last directory, or last special.
+      const lastDir = existingDirs[existingDirs.length - 1];
+      if (lastDir) return manifest.directories[lastDir]?.pageId;
+      const lastSpecial = specials[specials.length - 1];
+      return lastSpecial ? resolveBlockId(lastSpecial, manifest) : undefined;
+    }
+    const predecessorPath = targetList[newIndex - 1];
+    return resolveBlockId(predecessorPath, manifest);
+  }
+}
+
+/**
+ * Insert an entry into the working childOrder at the correct position.
+ * Mirrors the logic of findInsertionAfterBlockId.
+ */
+function insertIntoChildOrder(
+  childOrder: Record<string, string[]>,
+  parentPath: string,
+  newPath: string,
+  isDirectory: boolean,
+  manifest: Manifest,
+): void {
+  if (!childOrder[parentPath]) {
+    childOrder[parentPath] = [newPath];
+    return;
+  }
+
+  const order = childOrder[parentPath];
+  const specials = order.filter(e => e.startsWith("__"));
+  const existingDirs = order.filter(e => !e.startsWith("__") && (manifest.directories[e] || childOrder[e] !== undefined));
+  const existingFiles = order.filter(e => !e.startsWith("__") && !existingDirs.includes(e));
+
+  if (isDirectory) {
+    const allDirs = [...existingDirs, newPath].sort((a, b) =>
+      path.basename(a).localeCompare(path.basename(b))
+    );
+    // Rebuild order: specials, then sorted dirs, then existing files
+    childOrder[parentPath] = [...specials, ...allDirs, ...existingFiles];
+  } else {
+    const allFiles = [...existingFiles, newPath].sort((a, b) =>
+      path.basename(a).localeCompare(path.basename(b))
+    );
+    childOrder[parentPath] = [...specials, ...existingDirs, ...allFiles];
+  }
+}
 
 export async function upload(
   options: UploadOptions,
@@ -207,6 +311,7 @@ async function freshUpload(
   let pagesCreated = 0;
   let filesUploaded = 0;
   const manifestBuilder: ManifestBuilder = { files: {}, directories: {} };
+  const childOrder: Record<string, string[]> = { ".": [] };
 
   let rootPageId = "";
 
@@ -245,6 +350,7 @@ async function freshUpload(
       ignorePatternsDisplay,
       gitContext?.currentBranch,
     );
+    childOrder["."].push("__callout__");
 
     // Upload git context page
     let gitContextPageId: string | undefined;
@@ -256,6 +362,7 @@ async function freshUpload(
         gitContextPageId = result.pageId;
         gitContextBlocks = result.blockMap;
         pagesCreated++;
+        childOrder["."].push("__gitcontext__");
         logger.debug("\u2713 Git context uploaded");
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
@@ -277,6 +384,8 @@ async function freshUpload(
         totalFiles: fileCount,
         verbose: options.verbose,
         manifestBuilder,
+        childOrder,
+        parentPath: ".",
       },
     );
 
@@ -291,8 +400,10 @@ async function freshUpload(
         undefined,
         calloutBlockId,
         gitContextBlocks,
+        childOrder,
       );
       await writeManifest(rootPageId, manifest);
+      childOrder["."].push("__manifest__");
       pagesCreated++;
       logger.debug("Manifest written");
     } catch (err: unknown) {
@@ -462,6 +573,21 @@ async function updateExisting(
       }
     }
 
+    // Build working childOrder from manifest (or start fresh)
+    const workingChildOrder: Record<string, string[]> = manifest.childOrder
+      ? JSON.parse(JSON.stringify(manifest.childOrder))
+      : {};
+
+    // Remove deleted entries from working childOrder
+    const deletedSet = new Set([...diff.deleted, ...diff.deletedDirs]);
+    for (const parentKey of Object.keys(workingChildOrder)) {
+      workingChildOrder[parentKey] = workingChildOrder[parentKey].filter(e => !deletedSet.has(e));
+    }
+    // Remove childOrder entries for deleted directories
+    for (const dirPath of diff.deletedDirs) {
+      delete workingChildOrder[dirPath];
+    }
+
     // Create new directories (sorted top-down by diffManifest)
     if (diff.addedDirs.length > 0) {
       logger.debug(`Phase 2: Creating ${diff.addedDirs.length} new directory(ies)...`);
@@ -481,9 +607,20 @@ async function updateExisting(
 
       try {
         logger.debug(`Creating dir: ${dirPath}`);
-        const pageId = await createDirectoryPage(parentPageId, path.basename(dirPath));
+        const afterBlockId = findInsertionAfterBlockId(parentDir, dirPath, true, manifest);
+        const pageId = await createDirectoryPage(parentPageId, path.basename(dirPath), afterBlockId);
         dirPageIds[dirPath] = { pageId };
         pagesCreated++;
+
+        // Update manifest in-place for subsequent lookups
+        manifest.directories[dirPath] = { pageId };
+
+        // Update working child order
+        insertIntoChildOrder(workingChildOrder, parentDir, dirPath, true, manifest);
+        if (!workingChildOrder[dirPath]) {
+          workingChildOrder[dirPath] = [];
+        }
+
         logger.debug(`  Created dir: ${dirPath}`);
       } catch (err: unknown) {
         if (err instanceof logger.CancelledError) throw err;
@@ -569,7 +706,8 @@ async function updateExisting(
       try {
         const fileName = path.basename(filePath);
         const language = detectLanguage(fileName);
-        const pageId = await createFilePage(parentPageId, fileName, language);
+        const afterBlockId = findInsertionAfterBlockId(parentDir, filePath, false, manifest);
+        const pageId = await createFilePage(parentPageId, fileName, language, afterBlockId);
         pagesCreated++;
 
         const absPath = path.join(absDir, filePath);
@@ -587,6 +725,13 @@ async function updateExisting(
         await appendCodeBlocks(pageId, chunks, language || "plain text");
 
         newFileEntries[filePath] = { pageId, hash: localInfo.hash, size: localInfo.size };
+
+        // Update manifest in-place for subsequent lookups
+        manifest.files[filePath] = { pageId, hash: localInfo.hash, size: localInfo.size };
+
+        // Update working child order
+        insertIntoChildOrder(workingChildOrder, parentDir, filePath, false, manifest);
+
         logger.debug(`  \u2713 ${filePath}`);
       } catch (err: unknown) {
         if (err instanceof logger.CancelledError) throw err;
@@ -605,7 +750,7 @@ async function updateExisting(
     try {
       logger.debug("Updating root callout...");
       const ignorePatternsDisplay = getIgnorePatternsDisplay(absDir, options.ignore);
-      const calloutText = buildRootCalloutText(
+      const calloutRichText = buildRootCalloutRichText(
         absDir, localFiles.size, ignorePatternsDisplay, gitContext?.currentBranch
       );
 
@@ -613,7 +758,7 @@ async function updateExisting(
         // In-place update via blocks.update (1 API call)
         await updateBlock(manifest.calloutBlockId, {
           callout: {
-            rich_text: [{ type: "text", text: { content: calloutText } }],
+            rich_text: calloutRichText as any,
             icon: { type: "emoji", emoji: "\uD83D\uDCE6" },
             color: "blue_background",
           },
@@ -626,7 +771,7 @@ async function updateExisting(
         if (calloutBlock) {
           await updateBlock(calloutBlock.id, {
             callout: {
-              rich_text: [{ type: "text", text: { content: calloutText } }],
+              rich_text: calloutRichText as any,
               icon: { type: "emoji", emoji: "\uD83D\uDCE6" },
               color: "blue_background",
             },
@@ -694,6 +839,7 @@ async function updateExisting(
         manifest.createdAt,
         newCalloutBlockId,
         newGitContextBlocks,
+        workingChildOrder,
       );
       await writeManifest(existingRootPageId, updatedManifest, manifestPageId);
       logger.debug("Manifest updated");
@@ -819,6 +965,8 @@ interface UploadContext {
   totalFiles: number;
   verbose: boolean;
   manifestBuilder: ManifestBuilder;
+  childOrder: Record<string, string[]>;
+  parentPath: string;
 }
 
 async function uploadChildren(
@@ -849,8 +997,16 @@ async function uploadDirectory(
     ctx.incrementPages();
     ctx.manifestBuilder.directories[node.path] = { pageId };
 
+    // Track in parent's child order
+    ctx.childOrder[ctx.parentPath].push(node.path);
+    // Initialise this directory's child order
+    ctx.childOrder[node.path] = [];
+
     if (node.children) {
-      await uploadChildren(node.children, pageId, absRoot, ctx);
+      await uploadChildren(node.children, pageId, absRoot, {
+        ...ctx,
+        parentPath: node.path,
+      });
     }
   } catch (err: unknown) {
     if (err instanceof logger.CancelledError) throw err;
@@ -905,6 +1061,9 @@ async function uploadFile(
 
       // Record in manifest
       ctx.manifestBuilder.files[node.path] = { pageId, hash, size: node.size || 0 };
+
+      // Track in parent's child order
+      ctx.childOrder[ctx.parentPath].push(node.path);
 
       ctx.incrementFiles();
       logger.debug(`  \u2713 ${node.path}`);

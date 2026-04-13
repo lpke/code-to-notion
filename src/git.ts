@@ -380,6 +380,12 @@ export async function gatherGitContext(
     }
   }
 
+  const now = new Date();
+  const sevenDaysAgo = new Date(now);
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const thirtyDaysAgo = new Date(now);
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
   return {
     remotes,
     currentBranch,
@@ -398,6 +404,12 @@ export async function gatherGitContext(
     totalTagCount,
     branchLimitApplied,
     totalBranchCount,
+    dateBoundaries: {
+      recentActivityStart: sevenDaysAgo.toISOString().slice(0, 10),
+      recentActivityEnd: now.toISOString().slice(0, 10),
+      contributorStart: thirtyDaysAgo.toISOString().slice(0, 10),
+      contributorEnd: now.toISOString().slice(0, 10),
+    },
   };
 }
 
