@@ -4,7 +4,7 @@ import {
   APIErrorCode,
   isNotionClientError,
 } from "@notionhq/client";
-import type { FileNode, UploadOptions, UploadError, ManifestBuilder, ManifestDiff, ManifestFileEntry, ManifestDirEntry } from "./types.js";
+import type { FileNode, UploadOptions, UploadError, ManifestBuilder, ManifestDiff, ManifestFileEntry, ManifestDirEntry, GitContextBlockMap } from "./types.js";
 import {
   buildFileTree,
   countNodes,
@@ -25,6 +25,7 @@ import {
   buildRootCalloutText,
   appendGitContextPage,
   populateGitContextPage,
+  updateGitContextPage,
   updateBlock,
   writeManifest,
   findChildPageByTitle,
@@ -247,10 +248,13 @@ async function freshUpload(
 
     // Upload git context page
     let gitContextPageId: string | undefined;
+    let gitContextBlocks: GitContextBlockMap | undefined;
     if (gitContext) {
       try {
         logger.updateSpinner("\uD83D\uDCDD Uploading git context...");
-        gitContextPageId = await appendGitContextPage(rootPageId, gitContext);
+        const result = await appendGitContextPage(rootPageId, gitContext);
+        gitContextPageId = result.pageId;
+        gitContextBlocks = result.blockMap;
         pagesCreated++;
         logger.debug("\u2713 Git context uploaded");
       } catch (err: unknown) {
@@ -286,6 +290,7 @@ async function freshUpload(
         gitContextPageId,
         undefined,
         calloutBlockId,
+        gitContextBlocks,
       );
       await writeManifest(rootPageId, manifest);
       pagesCreated++;
@@ -641,20 +646,31 @@ async function updateExisting(
     }
 
     let newGitContextPageId = manifest.gitContextPageId;
+    let newGitContextBlocks = manifest.gitContextBlocks;
 
     if (includeGit && gitContext) {
       try {
-        if (manifest.gitContextPageId) {
-          // In-place: clear children and repopulate (page stays at its position)
+        if (manifest.gitContextPageId && manifest.gitContextBlocks) {
+          // TIER 1: Incremental update with section-level diffing
+          logger.updateSpinner("Updating git context page...");
+          newGitContextBlocks = await updateGitContextPage(
+            manifest.gitContextPageId,
+            gitContext,
+            manifest.gitContextBlocks,
+          );
+          logger.debug("\u2713 Git context updated incrementally");
+        } else if (manifest.gitContextPageId) {
+          // TIER 2: Has page but no block map — clear + rewrite (Chunk 1 fallback)
           logger.updateSpinner("Updating git context page...");
           await clearPageContent(manifest.gitContextPageId);
-          await populateGitContextPage(manifest.gitContextPageId, gitContext);
-          logger.debug("\u2713 Git context page updated in-place");
-          // newGitContextPageId stays the same
+          newGitContextBlocks = await populateGitContextPage(manifest.gitContextPageId, gitContext);
+          logger.debug("\u2713 Git context page rewritten in-place");
         } else {
-          // No existing page — create from scratch
+          // TIER 3: No existing page — create from scratch
           logger.updateSpinner("Creating git context page...");
-          newGitContextPageId = await appendGitContextPage(existingRootPageId, gitContext);
+          const result = await appendGitContextPage(existingRootPageId, gitContext);
+          newGitContextPageId = result.pageId;
+          newGitContextBlocks = result.blockMap;
           pagesCreated++;
           logger.debug("\u2713 Git context page created");
         }
@@ -677,6 +693,7 @@ async function updateExisting(
         newGitContextPageId,
         manifest.createdAt,
         newCalloutBlockId,
+        newGitContextBlocks,
       );
       await writeManifest(existingRootPageId, updatedManifest, manifestPageId);
       logger.debug("Manifest updated");

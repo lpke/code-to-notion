@@ -5,6 +5,7 @@ import type {
   ManifestFileEntry,
   ManifestDirEntry,
   ManifestDiff,
+  GitContextBlockMap,
 } from "./types.js";
 import { readFileContent } from "./files.js";
 import path from "node:path";
@@ -139,6 +140,7 @@ export function buildManifest(
   gitContextPageId?: string,
   existingCreatedAt?: string,
   calloutBlockId?: string,
+  gitContextBlocks?: GitContextBlockMap,
 ): Manifest {
   const now = new Date().toISOString();
   return {
@@ -148,6 +150,7 @@ export function buildManifest(
     rootPageId,
     ...(gitContextPageId ? { gitContextPageId } : {}),
     ...(calloutBlockId ? { calloutBlockId } : {}),
+    ...(gitContextBlocks ? { gitContextBlocks } : {}),
     files,
     directories,
   };

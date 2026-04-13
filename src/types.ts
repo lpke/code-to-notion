@@ -115,6 +115,26 @@ export interface ManifestDirEntry {
   pageId: string;
 }
 
+/** Block ID map for incremental git context updates */
+export interface GitContextBlockMap {
+  calloutId: string;
+  recentActivityHeadingId: string;
+  recentActivityCodeId: string;
+  hotFilesHeadingId?: string;
+  hotFilesCodeId?: string;
+  contributorsHeadingId?: string;
+  contributorsCodeId?: string;
+  diffstatHeadingId?: string;
+  diffstatCodeId?: string;
+  branchesHeadingId: string;
+  branches: Record<string, {
+    toggleId: string;
+    lastCommitHash: string;
+  }>;
+  tagsHeadingId?: string;
+  tagsCodeId?: string;
+}
+
 /** The manifest stored as JSON in a .manifest child page */
 export interface Manifest {
   version: 1;
@@ -123,6 +143,7 @@ export interface Manifest {
   rootPageId: string;
   gitContextPageId?: string;
   calloutBlockId?: string;
+  gitContextBlocks?: GitContextBlockMap;
   files: Record<string, ManifestFileEntry>;
   directories: Record<string, ManifestDirEntry>;
 }
