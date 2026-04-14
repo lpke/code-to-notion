@@ -1,12 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import type { GitContext } from "./types.js";
+import type { GitContext, GitLimits } from "./types.js";
 import * as logger from "./logger.js";
 
-const BRANCH_LIMIT = 20;
-const DEFAULT_BRANCH_COMMIT_LIMIT = 50;
-const OTHER_BRANCH_COMMIT_LIMIT = 20;
+export const DEFAULT_GIT_LIMITS: GitLimits = {
+  branches: 20,
+  defaultBranchCommits: 50,
+  otherBranchCommits: 20,
+  tags: 10,
+  activityDays: 14,
+  hotFiles: 30,
+};
 
 /**
  * Run a git command in the target directory. Returns stdout as a trimmed string.
@@ -43,6 +48,7 @@ function normalizeDiffstat(raw: string): string {
  */
 export async function gatherGitContext(
   targetDir: string,
+  limits: GitLimits,
 ): Promise<GitContext | null> {
   const absDir = path.resolve(targetDir);
 
@@ -127,14 +133,14 @@ export async function gatherGitContext(
     b.lastCommitDate.localeCompare(a.lastCommitDate),
   );
 
-  if (totalBranchCount > BRANCH_LIMIT) {
+  if (totalBranchCount > limits.branches) {
     logger.warn(
-      `Repository has ${totalBranchCount} branches. Only the ${BRANCH_LIMIT} most recent will be included.`,
+      `Repository has ${totalBranchCount} branches. Only the ${limits.branches} most recent will be included.`,
     );
 
     // Always include the default branch, even if it's not in the top N by date
     const defaultBranchEntry = sortedBranches.find((b) => b.name === defaultBranch);
-    const topBranches = sortedBranches.slice(0, BRANCH_LIMIT);
+    const topBranches = sortedBranches.slice(0, limits.branches);
     if (defaultBranchEntry && !topBranches.some((b) => b.name === defaultBranch)) {
       // Replace the last entry with the default branch
       topBranches[topBranches.length - 1] = defaultBranchEntry;
@@ -152,7 +158,7 @@ export async function gatherGitContext(
     logger.debug(`      [${branchIdx + 1}/${sortedBranches.length}] ${branch.name}: fetching commits...`);
     const isDefaultBranch = branch.name === defaultBranch;
     const isCurrentBranch = branch.name === currentBranch;
-    const commitLimit = isDefaultBranch ? DEFAULT_BRANCH_COMMIT_LIMIT : OTHER_BRANCH_COMMIT_LIMIT;
+    const commitLimit = isDefaultBranch ? limits.defaultBranchCommits : limits.otherBranchCommits;
 
     // Get total commit count for this branch (to detect truncation)
     const totalBranchCommitsStr = git(["rev-list", "--count", branch.gitRef], absDir);
@@ -279,7 +285,7 @@ export async function gatherGitContext(
   // --- 4. Recent Changes (Last 14 Days) ---
   logger.debug("   Gathering recent activity...");
   const recentCommitsRaw = git(
-    ["log", "--all", "--after=14 days ago", "--format=%h|%aI|%an|%s|%D", "--date=iso-strict"],
+    ["log", "--all", `--after=${limits.activityDays} days ago`, "--format=%h|%aI|%an|%s|%D", "--date=iso-strict"],
     absDir,
   );
   const commitsLast14Days: GitContext["recentActivity"]["commitsLast14Days"] = [];
@@ -301,7 +307,7 @@ export async function gatherGitContext(
 
   // Files changed in the last 14 days (most frequently changed)
   const hotFilesRaw = git(
-    ["log", "--all", "--after=14 days ago", "--name-only", "--format="],
+    ["log", "--all", `--after=${limits.activityDays} days ago`, "--name-only", "--format="],
     absDir,
   );
   const hotFiles: GitContext["recentActivity"]["hotFiles"] = [];
@@ -314,7 +320,7 @@ export async function gatherGitContext(
     }
     const sorted = Array.from(fileCounts.entries())
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 30);
+      .slice(0, limits.hotFiles);
     for (const [file, count] of sorted) {
       hotFiles.push({ count, file });
     }
@@ -322,7 +328,7 @@ export async function gatherGitContext(
 
   // Active contributors in the last 14 days
   const contributorsRaw = git(
-    ["log", "--all", "--after=14 days ago", "--format=%an <%ae>"],
+    ["log", "--all", `--after=${limits.activityDays} days ago`, "--format=%an <%ae>"],
     absDir,
   );
   const activeContributors: GitContext["recentActivity"]["activeContributors"] =
@@ -344,7 +350,7 @@ export async function gatherGitContext(
 
   // --- 5. Tags ---
   logger.debug("   Gathering tags...");
-  const TAG_LIMIT = 10;
+  const TAG_LIMIT = limits.tags;
   const tagsRaw = git(
     ["tag", "--sort=-creatordate", "--format=%(refname:short)|%(creatordate:iso-strict)|%(subject)"],
     absDir,
@@ -369,7 +375,7 @@ export async function gatherGitContext(
 
   const now = new Date();
   const fourteenDaysAgo = new Date(now);
-  fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+  fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - limits.activityDays);
 
   // Compute oldest activity date from the 14-day commit list
   let oldestActivityDate: string | undefined;

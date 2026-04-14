@@ -8,6 +8,16 @@ export interface Config {
   notionCodebasesPageId: string;
 }
 
+/** Configurable limits for git context gathering */
+export interface GitLimits {
+  branches: number;
+  defaultBranchCommits: number;
+  otherBranchCommits: number;
+  tags: number;
+  activityDays: number;
+  hotFiles: number;
+}
+
 /** Options passed from CLI to upload orchestration */
 export interface UploadOptions {
   dir: string;
@@ -20,6 +30,7 @@ export interface UploadOptions {
   skipGitContext: boolean;
   update?: boolean;
   replace?: boolean;
+  gitLimits: GitLimits;
 }
 
 /** A node in the file tree */

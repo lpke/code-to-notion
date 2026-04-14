@@ -178,9 +178,9 @@ export async function upload(
   let estimatedGitApiCalls = 0;
   const includeGit = !options.skipGitContext;
   if (includeGit) {
-    const branchEstimate = Math.min(dirCount > 0 ? 5 : 2, 20);
-    const defaultBranchCommits = 50;
-    const otherBranchCommits = 20;
+    const branchEstimate = Math.min(dirCount > 0 ? 5 : 2, options.gitLimits.branches);
+    const defaultBranchCommits = options.gitLimits.defaultBranchCommits;
+    const otherBranchCommits = options.gitLimits.otherBranchCommits;
     const avgCommitsPerBranch = branchEstimate > 1
       ? Math.round((defaultBranchCommits + (branchEstimate - 1) * otherBranchCommits) / branchEstimate)
       : defaultBranchCommits;
@@ -352,7 +352,7 @@ async function freshUpload(
     if (includeGit) {
       try {
         logger.startSpinner("\uD83D\uDCDD Gathering git context...");
-        gitContext = await gatherGitContext(absDir);
+        gitContext = await gatherGitContext(absDir, options.gitLimits);
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         logger.warn(`Git context failed (continuing with upload): ${message}`);
@@ -496,7 +496,7 @@ async function updateExisting(
   let gitContext: Awaited<ReturnType<typeof gatherGitContext>> = null;
   if (includeGit) {
     try {
-      gitContext = await gatherGitContext(absDir);
+      gitContext = await gatherGitContext(absDir, options.gitLimits);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn(`Git context failed (continuing with update): ${message}`);
