@@ -1,29 +1,37 @@
 {
   "name": "code-to-notion",
-  "version": "1.0.0",
   "description": "CLI tool to upload codebases to Notion pages",
-  "type": "module",
-  "main": "dist/index.js",
-  "bin": {
-    "code-to-notion": "dist/index.js"
-  },
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsx src/index.ts"
-  },
+  "keywords": [
+    "notion",
+    "code",
+    "codebase",
+    "upload",
+    "cli",
+    "notion-api",
+    "context",
+    "upload"
+  ],
+  "author": "luke@lpdev.io",
+  "version": "1.0.0",
+  "homepage": "https://github.com/lpke/code-to-notion#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lpke/code-to-notion.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "GPL-3.0-or-later",
   "bugs": {
     "url": "https://github.com/lpke/code-to-notion/issues"
   },
-  "homepage": "https://github.com/lpke/code-to-notion#readme",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "bin": {
+    "code-to-notion": "dist/index.js"
   },
   "dependencies": {
     "@notionhq/client": "^5.17.0",
@@ -37,5 +45,6 @@
     "@types/node": "^25.6.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"
-  }
+  },
+  "license": "GPL-3.0-or-later"
 }
