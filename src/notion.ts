@@ -935,39 +935,18 @@ export async function createNotionPage(
 }
 
 /**
- * Create a child page at a specific position under a parent.
- * Uses blocks.children.append with position parameter + pages.update for icon.
- * Falls back to createNotionPage if no afterBlockId is provided.
+ * Create a child page under a parent.
+ * Notion API does not support creating child_page blocks via
+ * blocks.children.append — child_page is a read-only block type.
+ * There is also no block move/reorder API. pages.create always
+ * appends to the end of the parent.
  */
 export async function createChildPageAtPosition(
   parentId: string,
   title: string,
   icon?: string,
-  afterBlockId?: string,
 ): Promise<string> {
-  if (!afterBlockId) {
-    return createNotionPage(parentId, title, icon);
-  }
-
-  const response = await rateLimiter.schedule(() =>
-    notionClient.blocks.children.append({
-      block_id: parentId,
-      children: [{ type: "child_page", child_page: { title } }] as any,
-      after: afterBlockId,
-    }),
-  );
-  const pageId = (response.results[0] as { id: string }).id;
-
-  if (icon) {
-    await rateLimiter.schedule(() =>
-      notionClient.pages.update({
-        page_id: pageId,
-        icon: { type: "emoji", emoji: icon as any },
-      }),
-    );
-  }
-
-  return pageId;
+  return createNotionPage(parentId, title, icon);
 }
 
 /**
@@ -976,9 +955,8 @@ export async function createChildPageAtPosition(
 export async function createDirectoryPage(
   parentId: string,
   dirName: string,
-  afterBlockId?: string,
 ): Promise<string> {
-  return createChildPageAtPosition(parentId, dirName, "\uD83D\uDCC1", afterBlockId);
+  return createChildPageAtPosition(parentId, dirName, "\uD83D\uDCC1");
 }
 
 /**
@@ -988,10 +966,9 @@ export async function createFilePage(
   parentId: string,
   fileName: string,
   language?: string,
-  afterBlockId?: string,
 ): Promise<string> {
   const icon = getFileIcon(language);
-  return createChildPageAtPosition(parentId, fileName, icon, afterBlockId);
+  return createChildPageAtPosition(parentId, fileName, icon);
 }
 
 /**

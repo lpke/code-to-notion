@@ -42,110 +42,6 @@ import type { Config } from "./types.js";
 
 const MAX_RETRIES = 3;
 
-// ---------------------------------------------------------------------------
-// Ordered insertion helpers
-// ---------------------------------------------------------------------------
-
-/** Resolve a childOrder key to its Notion block ID */
-function resolveBlockId(key: string, manifest: Manifest): string | undefined {
-  if (key === "__callout__") return manifest.calloutBlockId;
-  if (key === "__gitcontext__") return manifest.gitContextPageId;
-  if (key === "__manifest__") return undefined;
-  if (manifest.files[key]) return manifest.files[key].pageId;
-  if (manifest.directories[key]) return manifest.directories[key].pageId;
-  return undefined;
-}
-
-/**
- * Determine the block ID to insert after for a new file or directory.
- * Directories come before files; both sorted alphabetically within their group.
- */
-function findInsertionAfterBlockId(
-  parentPath: string,
-  newPath: string,
-  isDirectory: boolean,
-  manifest: Manifest,
-): string | undefined {
-  const order = manifest.childOrder?.[parentPath];
-  if (!order) return undefined;
-
-  // Separate entries into categories
-  const specials = order.filter(e => e.startsWith("__"));
-  const existingDirs = order.filter(e => !e.startsWith("__") && manifest.directories[e]);
-  const existingFiles = order.filter(e => !e.startsWith("__") && manifest.files[e]);
-
-  // Build desired sorted list with the new entry included
-  let targetList: string[];
-  if (isDirectory) {
-    targetList = [...existingDirs, newPath].sort((a, b) =>
-      path.basename(a).localeCompare(path.basename(b))
-    );
-  } else {
-    targetList = [...existingFiles, newPath].sort((a, b) =>
-      path.basename(a).localeCompare(path.basename(b))
-    );
-  }
-
-  const newIndex = targetList.indexOf(newPath);
-
-  if (isDirectory) {
-    // Directories go after specials, before files
-    if (newIndex === 0) {
-      // Should be first directory. Insert after last special, or undefined if no specials.
-      const lastSpecial = specials[specials.length - 1];
-      return lastSpecial ? resolveBlockId(lastSpecial, manifest) : undefined;
-    }
-    const predecessorPath = targetList[newIndex - 1];
-    return resolveBlockId(predecessorPath, manifest);
-  } else {
-    // Files go after directories
-    if (newIndex === 0) {
-      // Should be first file. Insert after last directory, or last special.
-      const lastDir = existingDirs[existingDirs.length - 1];
-      if (lastDir) return manifest.directories[lastDir]?.pageId;
-      const lastSpecial = specials[specials.length - 1];
-      return lastSpecial ? resolveBlockId(lastSpecial, manifest) : undefined;
-    }
-    const predecessorPath = targetList[newIndex - 1];
-    return resolveBlockId(predecessorPath, manifest);
-  }
-}
-
-/**
- * Insert an entry into the working childOrder at the correct position.
- * Mirrors the logic of findInsertionAfterBlockId.
- */
-function insertIntoChildOrder(
-  childOrder: Record<string, string[]>,
-  parentPath: string,
-  newPath: string,
-  isDirectory: boolean,
-  manifest: Manifest,
-): void {
-  if (!childOrder[parentPath]) {
-    childOrder[parentPath] = [newPath];
-    return;
-  }
-
-  const order = childOrder[parentPath];
-  const specials = order.filter(e => e.startsWith("__"));
-  const existingDirs = order.filter(e => !e.startsWith("__") && (manifest.directories[e] || childOrder[e] !== undefined));
-  const existingFiles = order.filter(e => !e.startsWith("__") && !existingDirs.includes(e));
-
-  if (isDirectory) {
-    const allDirs = [...existingDirs, newPath].sort((a, b) =>
-      path.basename(a).localeCompare(path.basename(b))
-    );
-    // Rebuild order: specials, then sorted dirs, then existing files
-    childOrder[parentPath] = [...specials, ...allDirs, ...existingFiles];
-  } else {
-    const allFiles = [...existingFiles, newPath].sort((a, b) =>
-      path.basename(a).localeCompare(path.basename(b))
-    );
-    childOrder[parentPath] = [...specials, ...existingDirs, ...allFiles];
-  }
-}
-
 export async function upload(
   options: UploadOptions,
   config: Config,
@@ -626,8 +522,7 @@ async function updateExisting(
 
       try {
         logger.debug(`      Creating dir: ${dirPath}`);
-        const afterBlockId = findInsertionAfterBlockId(parentDir, dirPath, true, manifest);
-        const pageId = await createDirectoryPage(parentPageId, path.basename(dirPath), afterBlockId);
+        const pageId = await createDirectoryPage(parentPageId, path.basename(dirPath));
         dirPageIds[dirPath] = { pageId };
         pagesCreated++;
 
@@ -635,7 +530,8 @@ async function updateExisting(
         manifest.directories[dirPath] = { pageId };
 
         // Update working child order
-        insertIntoChildOrder(workingChildOrder, parentDir, dirPath, true, manifest);
+        if (!workingChildOrder[parentDir]) workingChildOrder[parentDir] = [];
+        workingChildOrder[parentDir].push(dirPath);
         if (!workingChildOrder[dirPath]) {
           workingChildOrder[dirPath] = [];
         }
@@ -725,8 +621,7 @@ async function updateExisting(
       try {
         const fileName = path.basename(filePath);
         const language = detectLanguage(fileName);
-        const afterBlockId = findInsertionAfterBlockId(parentDir, filePath, false, manifest);
-        const pageId = await createFilePage(parentPageId, fileName, language, afterBlockId);
+        const pageId = await createFilePage(parentPageId, fileName, language);
         pagesCreated++;
 
         const absPath = path.join(absDir, filePath);
@@ -749,7 +644,8 @@ async function updateExisting(
         manifest.files[filePath] = { pageId, hash: localInfo.hash, size: localInfo.size };
 
         // Update working child order
-        insertIntoChildOrder(workingChildOrder, parentDir, filePath, false, manifest);
+        if (!workingChildOrder[parentDir]) workingChildOrder[parentDir] = [];
+        workingChildOrder[parentDir].push(filePath);
 
         logger.debug(`      \u2713 ${filePath} (created)`);
       } catch (err: unknown) {
